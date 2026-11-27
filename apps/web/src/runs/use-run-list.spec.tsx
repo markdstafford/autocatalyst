@@ -16,11 +16,14 @@ import type { Run } from '@autocatalyst/api-contract';
 
 import { makeRun } from './run-fixtures.js';
 import { createScriptedClient, unauthorizedError } from './scripted-client.js';
+import * as viewList from './run-view-list.js';
+import { ALL_RUNS } from './run-views.js';
 import { useRunList, type UseRunListOptions } from './use-run-list.js';
 
 type ListRunsOptions = NonNullable<Parameters<ControlPlaneClient['listRuns']>[0]>;
 
-interface HarnessProps extends Omit<UseRunListOptions, 'navigateToRun' | 'onListLostChange'> {
+interface HarnessProps extends Omit<UseRunListOptions, 'navigateToRun' | 'onListLostChange' | 'activeView'> {
+  readonly activeView?: UseRunListOptions['activeView'];
   readonly navigateToRun: UseRunListOptions['navigateToRun'];
   readonly onListLostChange: UseRunListOptions['onListLostChange'];
   /** When set, a button calls `replaceRun` with this run (live-update path). */
@@ -28,7 +31,7 @@ interface HarnessProps extends Omit<UseRunListOptions, 'navigateToRun' | 'onList
 }
 
 function Harness(props: HarnessProps): ReactNode {
-  const state = useRunList(props);
+  const state = useRunList({ ...props, activeView: props.activeView ?? ALL_RUNS });
   return (
     <div>
       <span data-testid="phase">{state.phase}</span>
@@ -71,6 +74,7 @@ function defaults(): { navigateToRun: ReturnType<typeof vi.fn>; onListLostChange
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -117,7 +121,7 @@ describe('useRunList initial load', () => {
         client={client.client}
         connected
         routeRunId={undefined}
-        requestArgs={{ projectId: 'p9' }}
+        projectId="p9"
         {...spies}
       />
     );
@@ -369,7 +373,7 @@ describe('useRunList scope', () => {
     const client = { listRuns };
     const spies = defaults();
     const props = { client, connected: true, routeRunId: undefined, pollIntervalMs: 1000, ...spies };
-    const { rerender } = render(<Harness {...props} requestArgs={{ projectId: 'old' }} />);
+    const { rerender } = render(<Harness {...props} projectId="old" />);
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     await act(async () => { screen.getByTestId('load').click(); });
     expect(screen.getByTestId('rows').textContent).toBe('old-1,old-2');
@@ -379,7 +383,7 @@ describe('useRunList scope', () => {
       { limit: 50, projectId: 'old' }, { limit: 50, projectId: 'old', cursor: 'old-cursor' }
     ]);
 
-    rerender(<Harness {...props} requestArgs={{ projectId: 'new' }} />);
+    rerender(<Harness {...props} projectId="new" />);
     expect(screen.getByTestId('rows').textContent).toBe('');
     expect(screen.getByTestId('hasNext').textContent).toBe('false');
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
@@ -500,5 +504,81 @@ describe('useRunList create handoff', () => {
     expect(screen.getByTestId('steps').textContent).toContain('new:implementation.human_review');
     expect(screen.getByTestId('selected').textContent).toBe('new');
     expect(spies.navigateToRun).not.toHaveBeenCalled();
+  });
+});
+
+describe('named run view switching', () => {
+  const review = { id: 'review', name: 'Review', layout: 'table' } as const;
+  const run = (id: string) => makeRun({ id, projectId: 'p1' });
+
+  it('reinterprets the active view, preserves loaded depth and selection, and polls the new request', async () => {
+    vi.useFakeTimers();
+    const request = vi.spyOn(viewList, 'buildRunViewRequest');
+    const projection = vi.spyOn(viewList, 'projectRunViewRows');
+    const listRuns = vi.fn<ControlPlaneClient['listRuns']>().mockImplementation(async (args) =>
+      args?.cursor === 'tail' ? { runs: [run('r2')] } : { runs: [run('r1')], nextCursor: 'tail' });
+    const props = { ...defaults(), client: { listRuns }, connected: true, projectId: 'p1', routeRunId: 'r1', pollIntervalMs: 1000 };
+    const { rerender } = render(<Harness {...props} />);
+    await act(async () => {});
+    await act(async () => { screen.getByTestId('load').click(); });
+    await act(async () => { screen.getByTestId('select-r2').click(); });
+    props.navigateToRun.mockClear();
+    rerender(<Harness {...props} routeRunId="r2" activeView={review} />);
+    expect(screen.getByTestId('rows').textContent).toBe('r1,r2');
+    expect(screen.getByTestId('selected').textContent).toBe('r2');
+    await act(async () => {});
+    expect(request).toHaveBeenLastCalledWith(review, 'p1');
+    expect(projection).toHaveBeenLastCalledWith(review, [run('r1'), run('r2')]);
+    expect(listRuns.mock.calls.slice(-2)).toEqual([[{ limit: 50, projectId: 'p1' }], [{ limit: 50, projectId: 'p1', cursor: 'tail' }]]);
+    expect(props.navigateToRun).not.toHaveBeenCalled();
+    const renamed = { ...review, name: 'My review' };
+    listRuns.mockClear();
+    rerender(<Harness {...props} routeRunId="r2" activeView={renamed} />);
+    expect(listRuns).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(listRuns.mock.calls).toEqual([[{ limit: 50, projectId: 'p1' }], [{ limit: 50, projectId: 'p1', cursor: 'tail' }]]);
+    expect(projection).toHaveBeenLastCalledWith(renamed, [run('r1'), run('r2')]);
+  });
+
+  it.each([false, true])('ignores obsolete results and falls back only after a confirmed refresh (empty=%s)', async (empty) => {
+    vi.useFakeTimers();
+    let finishOld!: (value: RunListResponse) => void;
+    let rejectOld!: (error: unknown) => void;
+    let finishCurrent!: (value: RunListResponse) => void;
+    const listRuns = vi.fn<ControlPlaneClient['listRuns']>()
+      .mockResolvedValueOnce({ runs: [run('r1'), run('r2'), run('r3')] })
+      .mockImplementationOnce(() => new Promise((resolve, reject) => { finishOld = resolve; rejectOld = reject; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { finishCurrent = resolve; }));
+    const props = { ...defaults(), onUnauthorized: vi.fn(), client: { listRuns }, connected: true, routeRunId: 'r2', pollIntervalMs: 1000 };
+    const { rerender } = render(<Harness {...props} />);
+    await act(async () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    rerender(<Harness {...props} activeView={review} />);
+    expect(screen.getByTestId('selected').textContent).toBe('r2');
+    expect(props.navigateToRun).not.toHaveBeenCalled();
+    await act(async () => { finishCurrent({ runs: empty ? [] : [run('r1'), run('r3')] }); });
+    expect(props.navigateToRun).toHaveBeenCalledExactlyOnceWith(empty ? undefined : 'r1', { replace: true });
+    await act(async () => {
+      if (empty) rejectOld(unauthorizedError());
+      else finishOld({ runs: [run('old')] });
+    });
+    expect(screen.getByTestId('rows').textContent).toBe(empty ? '' : 'r1,r3');
+    expect(props.onUnauthorized).not.toHaveBeenCalled();
+    expect(props.onListLostChange).not.toHaveBeenCalledWith(true);
+    expect(props.navigateToRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a no-request result as empty, never as an unfiltered request', async () => {
+    vi.spyOn(viewList, 'buildRunViewRequest').mockImplementation((view, projectId) =>
+      view.id === review.id ? null : { ...(projectId === undefined ? {} : { projectId }) });
+    const listRuns = vi.fn<ControlPlaneClient['listRuns']>().mockResolvedValue({ runs: [run('r1')] });
+    const props = { ...defaults(), client: { listRuns }, connected: true, projectId: 'p1', routeRunId: 'r1' };
+    const { rerender } = render(<Harness {...props} />);
+    await act(async () => {});
+    rerender(<Harness {...props} activeView={review} />);
+    expect(screen.getByTestId('rows').textContent).toBe('');
+    expect(screen.getByTestId('phase').textContent).toBe('ready');
+    expect(listRuns).toHaveBeenCalledTimes(1);
+    expect(props.navigateToRun).toHaveBeenCalledExactlyOnceWith(undefined, { replace: true });
   });
 });

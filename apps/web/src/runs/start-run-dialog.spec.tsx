@@ -33,7 +33,7 @@ const client: ControlPlaneClient = { ...createScriptedDetailClient().client, lis
   createConversationWithFirstRun: create };
 
 function setConnection(authorization: 'unknown' | 'unauthorized', next = client): void {
-  mockConnection.mockReturnValue({ client: next, authorization, setToken: vi.fn(), clearToken: vi.fn(), createTestClient: () => next });
+  mockConnection.mockReturnValue({ client: next, authorization, reportListUnauthorized: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(), createTestClient: () => next });
 }
 
 function Harness(): ReactNode {

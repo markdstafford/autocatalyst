@@ -41,6 +41,12 @@ export const knownFailureReasonCodes = [
   'checkpoint_capture_failed',
   'pr_finalize_invalid_result',
   'spec_freeze_failed',
+  'pr_integration_conflict',
+  'pr_integration_workspace_unavailable',
+  'pr_target_verification_failed',
+  'pr_publication_refresh_exhausted',
+  'pr_publication_candidate_changed',
+  'pr_publication_push_unverified',
   'pull_request_closed_without_merge',
   'run_branch_missing',
 ] as const;

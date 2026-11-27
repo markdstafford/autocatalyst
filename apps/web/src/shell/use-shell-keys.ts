@@ -29,5 +29,5 @@ export function useShellKeys(handlers: ShellKeyHandlers, enabled = true): void {
     ...(handlers.togglePane !== undefined ? { 'pane-toggle': handlers.togglePane } : {}),
     ...(handlers.openShortcuts !== undefined ? { 'open-shortcuts': handlers.openShortcuts } : {})
   };
-  useActionKeys(enabled ? map : {});
+  useActionKeys(enabled ? map : {}, { getState: () => ({ route: 'runs', shortcutsOpen: true }) });
 }

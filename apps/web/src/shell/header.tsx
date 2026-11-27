@@ -1,29 +1,36 @@
-/**
- * The shell header (banner region).
- *
- * Top-level views show only the title (Runs); deeper views show a breadcrumb plus
- * the title (Settings / Connection). The title row is `--height-header-bar` tall and
- * shares its top and bottom edges with the sidebar title row. The `<header>` is not
- * inside a sectioning element, so it exposes the `banner` landmark.
- */
+/** The shell banner: a title row, followed by the collection strip on run routes. */
 import type { ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 
-import { headerContentForPath } from './navigation.js';
+import { headerContentForPath, isRunsPath, type ProjectBreadcrumb } from './navigation.js';
 
-export function Header({ projectName }: { readonly projectName?: string | undefined }): ReactNode {
-  const location = useLocation();
-  const { breadcrumb, title } = headerContentForPath(location.pathname, projectName);
+interface HeaderProps {
+  readonly viewTitle: string;
+  readonly project?: ProjectBreadcrumb | undefined;
+  readonly viewSettings?: ReactNode;
+  readonly chips?: ReactNode;
+}
+
+export function Header({ viewTitle, project, viewSettings, chips }: HeaderProps): ReactNode {
+  const { pathname } = useLocation();
+  const { breadcrumb, title } = headerContentForPath(pathname, viewTitle, project);
+  const runs = isRunsPath(pathname);
 
   return (
-    <header className="flex h-header-bar shrink-0 items-center gap-1.5 border-b border-border px-3">
-      {breadcrumb !== undefined ? (
-        <span className="flex items-center gap-1.5 text-sm text-subtext">
-          {breadcrumb}
-          <span aria-hidden>/</span>
-        </span>
-      ) : null}
-      <h1 className="truncate text-md font-medium text-text">{title}</h1>
+    <header className="min-w-0 shrink-0 border-b border-border">
+      <div data-testid="header-title" className="flex h-header-bar min-w-0 items-center gap-3 px-3">
+        <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+          {breadcrumb !== undefined ? (
+            <>
+              <span className="max-w-[45%] truncate text-sm text-subtext">{breadcrumb}</span>
+              <span className="text-sm text-subtext" aria-hidden>/</span>
+            </>
+          ) : null}
+          <h1 className="truncate text-md font-medium text-text">{title}</h1>
+        </div>
+        {runs ? viewSettings : null}
+      </div>
+      {runs ? chips : null}
     </header>
   );
 }

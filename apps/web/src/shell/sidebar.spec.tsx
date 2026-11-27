@@ -9,6 +9,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 
+import { ALL_RUNS } from '../runs/run-views.js';
 import { Sidebar } from './sidebar.js';
 
 function renderSidebar(
@@ -17,16 +18,17 @@ function renderSidebar(
   const { path = '/runs', ...rest } = props;
   render(
     <MemoryRouter initialEntries={[path]}>
-      <Sidebar mode="docked" settings={false} onCloseSettings={vi.fn()} {...rest} />
+      <Sidebar views={[ALL_RUNS]} activeViewId={ALL_RUNS.id} activateView={vi.fn()} mode="docked" settings={false} onCloseSettings={vi.fn()} {...rest} />
     </MemoryRouter>
   );
 }
 
 describe('Sidebar (primary)', () => {
-  it('lists Runs (current on /runs) and Settings, and omits later rows', () => {
+  it('lists Runs, its current view, and Settings, and omits later rows', () => {
     renderSidebar({ path: '/runs' });
     const runs = screen.getByRole('link', { name: 'Runs' });
-    expect(runs.getAttribute('aria-current')).toBe('page');
+    expect(runs.getAttribute('aria-current')).toBeNull();
+    expect(screen.getByRole('link', { name: 'All runs' }).getAttribute('aria-current')).toBe('page');
     expect(screen.getByRole('link', { name: 'Settings' })).toBeDefined();
     for (const absent of ['To do', 'Pinned', 'Projects', 'General', 'Appearance']) {
       expect(screen.queryByRole('link', { name: absent })).toBeNull();
@@ -89,7 +91,7 @@ describe('Sidebar (closed)', () => {
   it('removes closed content from the accessibility tree and tab order', () => {
     const { container } = render(
       <MemoryRouter initialEntries={['/runs']}>
-        <Sidebar mode="hidden" settings={false} onCloseSettings={vi.fn()} />
+        <Sidebar views={[ALL_RUNS]} activeViewId={ALL_RUNS.id} activateView={vi.fn()} mode="hidden" settings={false} onCloseSettings={vi.fn()} />
       </MemoryRouter>
     );
     const nav = container.querySelector('nav[aria-label="Primary"]');

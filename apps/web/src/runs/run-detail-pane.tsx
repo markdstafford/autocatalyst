@@ -150,25 +150,26 @@ function RunDetailBody({ run, detail, currentPrincipalId, currentPrincipalIsHuma
     return () => setFooterContent(null);
   }, [setFooterContent, footerActive, openCount, resolvedCount, hasComments, canPrevious, canNext, selectPrevious, selectNext]);
 
-  // Keyboard handlers for the spec actions, registered only while the Spec tab is active and the spec
-  // is ready; the registry suppresses them in text entry, menus, and the expanded dialog, and these
-  // handler-level guards keep them inert otherwise.
-  const specKeysActive = visibleTab === 'spec' && specReady;
-  useActionKeys(
-    specKeysActive
-      ? {
-          'next-comment': () => controller.selectNext(),
-          'previous-comment': () => controller.selectPrevious(),
-          'resolve-comment': () => {
-            const id = controller.selectedId;
-            if (id !== null && controller.canResolve(id)) {
-              controller.resolve(id);
-            }
-          },
-          'expand-spec': () => setOverlayOpen(true)
-        }
-      : {}
-  );
+  // Supply live detail eligibility to the same predicates exercised by the
+  // registry-wide conflict test. Recheck comment ownership before executing.
+  useActionKeys({
+    'next-comment': selectNext,
+    'previous-comment': selectPrevious,
+    'resolve-comment': () => {
+      const id = controller.selectedId;
+      if (id !== null && controller.canResolve(id)) controller.resolve(id);
+    },
+    'expand-spec': () => setOverlayOpen(true)
+  }, {
+    getState: () => ({
+      run,
+      detailTab: visibleTab,
+      specReady,
+      canSelectPreviousComment: canPrevious,
+      canSelectNextComment: canNext,
+      canResolveComment: controller.selectedId !== null && controller.canResolve(controller.selectedId)
+    })
+  });
 
   const onApprove = (): ReturnType<typeof detail.replyToGate> => detail.replyToGate('approve');
   const onRequestChanges = (): ReturnType<typeof detail.replyToGate> => detail.replyToGate('request_changes');
@@ -208,8 +209,8 @@ function RunDetailBody({ run, detail, currentPrincipalId, currentPrincipalIsHuma
       <div data-testid="pane-body" className="flex min-h-0 flex-1 flex-col">
         <div className="shrink-0 px-4 pb-4 pt-4">
           <RunDetailHeader run={run} />
-          {detail.specQuestion && detail.answerSpecQuestion && currentPrincipalIsHuman !== false ? (
-            <SpecQuestionReply key={detail.specQuestion.stepId} pause={detail.specQuestion} answer={detail.answerSpecQuestion} />
+          {detail.guidancePause && detail.answerGuidance && currentPrincipalIsHuman !== false ? (
+            <GuidanceReply key={detail.guidancePause.stepId} pause={detail.guidancePause} answer={detail.answerGuidance} />
           ) : null}
         </div>
         <Tabs
@@ -280,9 +281,9 @@ function RunDetailBody({ run, detail, currentPrincipalId, currentPrincipalIsHuma
   );
 }
 
-function SpecQuestionReply({ pause, answer }: {
-  pause: NonNullable<RunDetailState['specQuestion']>;
-  answer: NonNullable<RunDetailState['answerSpecQuestion']>;
+function GuidanceReply({ pause, answer }: {
+  pause: NonNullable<RunDetailState['guidancePause']>;
+  answer: NonNullable<RunDetailState['answerGuidance']>;
 }): ReactNode {
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
@@ -300,8 +301,8 @@ function SpecQuestionReply({ pause, answer }: {
         }
       });
     }}>
-      <p className="text-sm">Spec {pause.role === 'implementer' ? 'author' : 'reviewer'} asks: {pause.question}</p>
-      <Textarea aria-label="Answer spec question" value={body} onChange={event => setBody(event.target.value)} rows={2} />
+      <p className="text-sm">{pause.kind === 'spec' ? `Spec ${pause.role === 'implementer' ? 'author' : 'reviewer'} asks:` : 'CI repair needs guidance:'} {pause.question}</p>
+      <Textarea aria-label={pause.kind === 'spec' ? 'Answer spec question' : 'Give CI repair guidance'} value={body} onChange={event => setBody(event.target.value)} rows={2} />
       {error ? <p role="alert" className="text-sm text-red">{error}</p> : null}
       <Button type="submit" disabled={busy || !body.trim()}>Send answer</Button>
     </form>

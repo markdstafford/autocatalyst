@@ -1,5 +1,5 @@
 /**
- * The Runs destination: the first complete all-runs collection screen.
+ * The Runs destination: the active named view of the run collection.
  *
  * It composes the run list state module ({@link useRunList}) with the table, the side
  * detail pane, and the resize separator, and renders the loading, no-runs, and
@@ -8,8 +8,8 @@
  * outlet context.
  *
  * Connection: without a stored bearer token the page shows the connect empty state and
- * starts no request or timer (the state module's no-token path). A `401` from the list
- * or project calls flips the provider's authorization to `unauthorized`; this page
+ * starts no request or timer (the state module's no-token path). A current `401`
+ * from a list or project read flips the provider's authorization to `unauthorized`; this page
  * observes that and navigates to the connection page. The run list writes only the
  * shell `listLost` flag, which the footer reads.
  */
@@ -28,7 +28,7 @@ import { useCurrentPrincipal } from '../runs/use-current-principal.js';
 import { useRunDetail } from '../runs/use-run-detail.js';
 import { useRunList } from '../runs/use-run-list.js';
 import { useConnectionState } from '../shell/connection-state.js';
-import { CONNECTION_PATH, projectIdFromSearch, projectRunsPath, runPath } from '../shell/navigation.js';
+import { CONNECTION_PATH, RUNS_PATH, projectIdFromSearch, projectRunsPath, runPath } from '../shell/navigation.js';
 import { useActionKeys } from '../shell/use-action-keys.js';
 import type { RunsOutletContext } from '../shell/shell-layout.js';
 import { PANE_WIDTH_MAX, PANE_WIDTH_MIN } from '../theme/preferences.js';
@@ -42,11 +42,11 @@ export function RunsPage(): ReactNode {
   const projectId = projectIdFromSearch(location.search);
   const { runId: routeRunId } = useParams();
   const connected = hasBearerToken();
-  const { client, authorization } = useControlPlaneConnection();
+  const { client, authorization, reportListUnauthorized } = useControlPlaneConnection();
   const canRead = connected && authorization !== 'unauthorized';
   const currentPrincipal = useCurrentPrincipal(client, canRead);
   const { setListLost } = useConnectionState();
-  const { detailPaneVisible, sidePaneWidthPx, setPaneWidth, startRunOpen, openStartRun, receiveCreatedRun } = useOutletContext<RunsOutletContext>();
+  const { detailPaneVisible, sidePaneWidthPx, setPaneWidth, startRunOpen, openStartRun, receiveCreatedRun, activeView } = useOutletContext<RunsOutletContext>();
   const mainRef = useRef<HTMLDivElement | null>(null);
   const [handoff, setHandoff] = useState<{
     readonly run: Run;
@@ -57,11 +57,10 @@ export function RunsPage(): ReactNode {
     routeRunId === handoff.run.id && handoff.projectId === projectId ? handoff.run : undefined;
 
   const navigateToRun = useCallback(
-    (id: string, options: { readonly replace: boolean }): void => {
-      const path = runPath(id);
-      navigate(projectId === undefined ? path : projectRunsPath(projectId, path), options);
+    (id: string | undefined, options: { readonly replace: boolean }): void => {
+      navigate({ pathname: id === undefined ? RUNS_PATH : runPath(id), search: location.search }, options);
     },
-    [navigate, projectId]
+    [navigate, location.search]
   );
 
   const state = useRunList({
@@ -71,7 +70,9 @@ export function RunsPage(): ReactNode {
     navigateToRun,
     onListLostChange: setListLost,
     ...(createdRun !== undefined ? { createdRun } : {}),
-    ...(projectId !== undefined ? { requestArgs: { projectId } } : {})
+    activeView,
+    projectId,
+    onUnauthorized: () => reportListUnauthorized(client)
   });
 
   const { prepareCreatedRun } = state;
@@ -114,7 +115,8 @@ export function RunsPage(): ReactNode {
 
   // The run list owns the selection keys. The registry gates `j`/`k`/arrows on focus
   // being inside the list, so binding them here (not at the shell scope) keeps the
-  // shell and the list as separate key owners. `move` is a no-op without rows.
+  // shell and the list as separate key owners.
+  const selectedIndex = state.rows.findIndex((row) => row.id === state.selectedRunId);
   useActionKeys({
     'select-next': () => {
       state.move('next');
@@ -122,6 +124,11 @@ export function RunsPage(): ReactNode {
     'select-previous': () => {
       state.move('previous');
     }
+  }, {
+    getState: () => ({
+      canSelectNext: selectedIndex >= 0 && (selectedIndex < state.rows.length - 1 || state.hasNextPage),
+      canSelectPrevious: selectedIndex > 0
+    })
   });
 
   // A 401 is an authorization state, not a lost connection. While the dialog is open

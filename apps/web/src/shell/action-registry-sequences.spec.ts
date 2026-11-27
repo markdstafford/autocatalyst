@@ -5,6 +5,9 @@
  * drives; `findRegistryConflicts`/`assertRegistryValid` reject duplicate bindings and
  * sequence-prefix conflicts, naming both actions. The shipped registry is proven valid.
  */
+import { runStatusSchema, waitingOnSchema } from '@autocatalyst/api-contract';
+import { makeRun } from '../runs/run-fixtures.js';
+import { ALL_TAB_IDS } from '../runs/run-detail-tabs.js';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -12,6 +15,8 @@ import {
   advanceSequence,
   assertRegistryValid,
   findRegistryConflicts,
+  matchAction,
+  type ActionState,
   startSequenceCandidates,
   type ActionContext,
   type ActionDescriptor
@@ -100,21 +105,104 @@ describe('advanceSequence', () => {
   });
 });
 
+// Keep context samples in test code: they catch sampled overlaps, not every
+// conceivable state. Include legacy runs without derived status/waiting fields.
+function* detailSamples(): Iterable<ActionState> {
+  yield {};
+  const steps = [
+    'spec.author', 'spec.awaiting_input', 'spec.human_review', 'implementation.awaiting_input',
+    'implementation.human_review', 'docs.human_review', 'pr.human_review'
+  ];
+  const comments = [
+    {},
+    { canSelectNextComment: true },
+    { canSelectPreviousComment: true },
+    { canSelectNextComment: true, canSelectPreviousComment: true },
+    { canSelectNextComment: true, canSelectPreviousComment: true, canResolveComment: true },
+    { canResolveComment: true }
+  ];
+  for (const currentStep of steps) {
+    for (const status of [undefined, ...runStatusSchema.options]) {
+      for (const waitingOn of [undefined, ...waitingOnSchema.options]) {
+        const run = { ...makeRun(), currentStep, status, waitingOn, terminal: status !== undefined && status !== 'in_progress' };
+        for (const detailTab of ALL_TAB_IDS) {
+          for (const specReady of [true, false]) {
+            for (const comment of comments) yield { run, detailTab, specReady, ...comment };
+          }
+        }
+      }
+    }
+  }
+}
+
+function shippedSamples(): ActionContext[] {
+  const samples: ActionContext[] = [];
+  const detail = [...detailSamples()];
+  for (const isMac of [false, true]) {
+    for (const textEntry of [false, true]) {
+      for (const overlayLayerOpen of [false, true]) {
+        const common = { ...PLAIN, isMac, textEntry, overlayLayerOpen };
+        samples.push({ ...common, route: 'other' });
+        for (const settingsCheckPending of [false, true]) {
+          for (const hoverSidebarOpen of [false, true]) {
+            samples.push({ ...common, route: 'settings', settingsCheckPending, hoverSidebarOpen });
+          }
+        }
+        for (const viewPosition of ['singleton', 'first', 'middle', 'last'] as const) {
+          const named = { ...common, route: 'runs', viewPosition } as const;
+          samples.push({ ...named, startRunOpen: true }, { ...named, shortcutsOpen: true },
+            { ...named, hoverSidebarOpen: true }, { ...named, listFocused: true });
+          for (const spec of detail) {
+            samples.push({ ...named, ...spec });
+            if (spec.run !== undefined) {
+              samples.push(
+                { ...named, ...spec, listFocused: true, canSelectNext: true },
+                { ...named, ...spec, listFocused: true, canSelectPrevious: true },
+                { ...named, ...spec, listFocused: true, canSelectNext: true, canSelectPrevious: true }
+              );
+            }
+          }
+        }
+      }
+    }
+  }
+  return samples;
+}
+
 describe('findRegistryConflicts', () => {
-  it('passes the shipped registry', () => {
-    expect(findRegistryConflicts(ACTIONS)).toEqual([]);
+  it('passes the entire shipped registry in sampled contexts', () => {
+    expect(findRegistryConflicts(ACTIONS, shippedSamples())).toEqual([]);
     expect(() => assertRegistryValid(ACTIONS)).not.toThrow();
   });
 
-  it('rejects two actions that share a binding, naming both', () => {
-    const registry: readonly ActionDescriptor[] = [
-      { id: 'sidebar-toggle', name: 'A', keys: [[{ key: 'x' }]], appliesWhen: 'no-text-entry' },
-      { id: 'pane-toggle', name: 'B', keys: [[{ key: 'x' }]], appliesWhen: 'no-text-entry' }
-    ];
-    const conflicts = findRegistryConflicts(registry);
-    expect(conflicts).toHaveLength(1);
-    expect(conflicts[0]).toContain('sidebar-toggle');
-    expect(conflicts[0]).toContain('pane-toggle');
+  const overlapping: readonly ActionDescriptor[] = [
+    { id: 'create-view', name: 'A', keys: [[{ key: 'x', mod: 'mod' }]], appliesWhen: 'no-text-entry' },
+    { id: 'pane-toggle', name: 'B', keys: [[{ key: 'X', mod: 'mod', shift: false }]], appliesWhen: 'no-text-entry' }
+  ];
+
+  it('accepts structurally valid overlaps on import but rejects them with a sampled witness', () => {
+    expect(() => assertRegistryValid(overlapping)).not.toThrow();
+    expect(findRegistryConflicts(overlapping, [{ ...PLAIN, route: 'runs', isMac: true }]))
+      .toEqual([expect.stringMatching(/create-view.*pane-toggle.*⌘x.*"route":"runs"/u)]);
+  });
+
+  it('allows disjoint shared bindings and dispatches each only in its own context', () => {
+    const disjoint: readonly ActionDescriptor[] = overlapping.map((action) => ({
+      ...action, when: (ctx) => ctx.route === (action.id === 'create-view' ? 'runs' : 'settings')
+    }));
+    const runs: ActionContext = { ...PLAIN, route: 'runs' };
+    const settings: ActionContext = { ...PLAIN, route: 'settings' };
+    const event = makeEvent({ key: 'x', ctrlKey: true });
+    expect(() => assertRegistryValid(disjoint)).not.toThrow();
+    expect(findRegistryConflicts(disjoint, [runs, settings])).toEqual([]);
+    expect(matchAction(event, runs, disjoint)).toBe('create-view');
+    expect(matchAction(event, settings, disjoint)).toBe('pane-toggle');
+  });
+
+  it('rejects malformed and equivalent within-action bindings without samples', () => {
+    const action = overlapping[0]!;
+    expect(() => assertRegistryValid([{ ...action, keys: [[{ key: 'x', alt: true }]] }])).toThrow(/malformed/u);
+    expect(() => assertRegistryValid([{ ...action, keys: [[{ key: '?' }], [{ key: '?', shift: true }]] }])).toThrow(/repeats/u);
   });
 
   it('rejects a combo that is also the prefix of a sequence, naming both', () => {

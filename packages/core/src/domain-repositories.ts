@@ -124,6 +124,7 @@ export interface RecordRunStepTransitionInput {
   readonly checkpointResult?: JsonValue;
   /** Initial checkpoint for the occurrence being opened in the same transition. */
   readonly destinationCheckpointResult?: JsonValue;
+  readonly publicationProvenance?: { readonly pullRequestId: string; readonly headSha: string };
   readonly failureReason?: string;
 }
 
@@ -302,6 +303,7 @@ export interface UpdatePullRequestStateInput {
 }
 
 export interface ListOpenPullRequestsInput {
+  readonly after?: { readonly createdAt: string; readonly id: string };
   readonly tenant: string;
   readonly limit: number;
 }

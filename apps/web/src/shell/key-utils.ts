@@ -11,7 +11,8 @@
  * A {@link ShellChord} is one keyboard event shape. Letter chords are authored with a
  * lowercase `key` (`{ key: 'j' }`) and matched CapsLock-safely. Non-letter printable
  * chords (`?`, `[`) carry their printed `key` and ignore Shift, because the key value
- * already encodes Shift. A chord that names `alt` also names a physical `code` (for
+ * already encodes Shift, unless a binding opts in to `exactShift`. A chord that
+ * names `alt` also names a physical `code` (for
  * example `KeyK`), because macOS Option changes `event.key`.
  *
  * A {@link Binding} is a non-empty ordered list of chords: one chord is a combo, two or
@@ -25,8 +26,10 @@ export interface ShellChord {
   readonly code?: string;
   /** `mod` means Cmd on macOS and Ctrl elsewhere. Absent means that modifier must be up. */
   readonly mod?: 'mod';
-  /** Whether Shift must be held (letter/alt chords only; non-letter chords ignore Shift). */
+  /** Whether Shift must be held (for letters, named Alt, or an exact-Shift binding). */
   readonly shift?: boolean;
+  /** Match Shift exactly even for a printed non-letter. */
+  readonly exactShift?: boolean;
   /** Whether Alt/Option must be held. When set, `code` is matched instead of `key`. */
   readonly alt?: boolean;
 }
@@ -84,8 +87,8 @@ export function isLetterChord(chord: ShellChord): boolean {
 }
 
 /** Whether a chord honours Shift exactly (letters and named-alt chords) vs ignores it. */
-function honoursShift(chord: ShellChord): boolean {
-  return isLetterChord(chord) || (chord.alt === true && chord.code !== undefined);
+export function honoursShift(chord: ShellChord): boolean {
+  return chord.exactShift === true || isLetterChord(chord) || (chord.alt === true && chord.code !== undefined);
 }
 
 /** Human display text for a single chord, platform-aware (glyphs on macOS). */
@@ -162,7 +165,7 @@ export function modifierHeld(event: ShellKeyEvent): boolean {
  * - `alt`: must match; a named-alt chord compares the physical `code` because Option
  *   rewrites `event.key` on macOS. AltGraph is always blocked.
  * - letter chords match `event.key.toLowerCase()` (CapsLock-safe) and require exact Shift;
- *   non-letter printable chords compare `event.key` and ignore Shift.
+ *   non-letter printable chords compare `event.key` and ignore Shift unless opted in.
  */
 export function matchesChord(event: ShellKeyEvent, chord: ShellChord, isMac: boolean): boolean {
   const modHeld = isMac ? event.metaKey : event.ctrlKey;

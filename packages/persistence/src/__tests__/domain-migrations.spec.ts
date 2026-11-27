@@ -97,6 +97,12 @@ describe('domain schema migrations', () => {
           terminal integer NOT NULL, tracked_issue_json text, testing_guide_result_json text,
           failure_reason text, created_at text NOT NULL, updated_at text NOT NULL
         );
+        CREATE TABLE pull_requests (
+          id text PRIMARY KEY NOT NULL, run_id text NOT NULL, owner_json text NOT NULL,
+          tenant text NOT NULL, provider text NOT NULL, number integer NOT NULL, url text NOT NULL,
+          state text NOT NULL, branch text NOT NULL, created_at text NOT NULL, updated_at text NOT NULL
+        );
+        CREATE TABLE run_steps (id text PRIMARY KEY NOT NULL, run_id text NOT NULL);
         CREATE TABLE sessions (
           id text PRIMARY KEY NOT NULL, run_id text NOT NULL, phase text,
           step text NOT NULL, role text NOT NULL, round integer NOT NULL,
@@ -117,6 +123,8 @@ describe('domain schema migrations', () => {
       const costJson = JSON.stringify({ model: { provider: 'openai', model: 'gpt-4.1' }, usd: 125, tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } });
       rawDb.prepare(`INSERT INTO runs (id, topic_id, owner_json, tenant, work_kind, current_step, terminal, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run('run_seq', 'topic_seq', '{}', 'tenant1', 'feature', 'spec.author', 0, now, now);
+      rawDb.prepare(`INSERT INTO pull_requests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run('legacy-pr', 'run_seq', '{}', 'tenant1', 'github', 1, 'https://github.com/test/repo/pull/1', 'open', 'feature/test', now, now);
       const insertSession = rawDb.prepare(`INSERT INTO sessions (id, run_id, phase, step, role, round, model_json, inference_settings_json, started_at, ended_at, duration_ms, tokens_json, usage_available, assistant_turn_count, tool_call_count, outcome, cost_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       // Insert out of started_at order to prove the backfill orders by started_at, not rowid.
       insertSession.run('sess_b', 'run_seq', null, 'implementation.build', 'none', 0, model, inference, '2026-06-08T00:00:02.000Z', null, null, tokens, 1, 1, 0, 'succeeded', costJson);
@@ -132,6 +140,9 @@ describe('domain schema migrations', () => {
           { id: 'sess_a', sequence: 1 },
           { id: 'sess_b', sequence: 2 }
         ]);
+        expect(internal.client.prepare('SELECT autocatalyst_head_sha FROM pull_requests WHERE id = ?').get('legacy-pr'))
+          .toEqual({ autocatalyst_head_sha: null });
+        expect(internal.client.prepare('SELECT count(*) AS total FROM pr_ci_repair_heads').get()).toEqual({ total: 0 });
         expect(internal.client.prepare('SELECT tokens_json, cost_json, usage_json FROM sessions WHERE id = ?').get('sess_a'))
           .toEqual({ tokens_json: tokens, cost_json: costJson, usage_json: null });
       } finally {

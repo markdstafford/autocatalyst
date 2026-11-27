@@ -208,6 +208,9 @@ export interface ConvergenceEngineInput {
   readonly workflow: RunWorkflowDefinition;
   readonly workspace?: WorkspaceContext;
   readonly humanGuidance?: string;
+  readonly ciRepair?: { readonly failedHead: string; readonly failures: readonly import('./code-host.js').RequiredCheckEvidence[] };
+  readonly priorCheckpoint?: ConvergenceCheckpoint;
+  readonly stillOwns?: () => Promise<boolean>;
 }
 
 export type ConvergenceEscalationReason = 'max_rounds' | 'oscillation';
@@ -323,7 +326,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
       // 1) Implementer
       const implReviewContext = lastBlockingFindingContexts.length > 0 || humanGuidance !== undefined
         ? {
-            previousRounds: rounds.map(r => r),
+            previousRounds: [...(input.priorCheckpoint?.rounds ?? []), ...rounds],
             previousFindings: lastReviewerFindingContexts,
             requiredDispositions: lastBlockingFindingContexts.map(c => ({
               feedbackId: c.feedbackId,
@@ -335,15 +338,17 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
             ...(humanGuidance !== undefined ? { humanGuidance } : {})
           }
         : {
-            previousRounds: rounds.map(r => r),
+            previousRounds: [...(input.priorCheckpoint?.rounds ?? []), ...rounds],
             routingDistinct: routes.routingInfo.distinct
           };
 
+      if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
       const implDispatch: ReviewedRoleDispatchResult = await options.dispatcher.runRole({
         runId: input.runId,
         run: input.run,
         tenant: input.tenant,
         role: 'implementer',
+        ...(input.ciRepair !== undefined ? { ciRepair: input.ciRepair } : {}),
         round: roundNumber,
         reviewContext: implReviewContext,
         toolPolicyMode: 'write',
@@ -351,8 +356,15 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         route: routes.implementerRoute
       });
 
+      if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
       // If implementer asked for input, surface that immediately.
       if (implDispatch.workResult.directive === 'needs_input') {
+        if (input.ciRepair !== undefined && input.workspace !== undefined) {
+          await options.git.commitFiles({
+            runId: input.runId, workspaceRepoRoot: input.workspace.workspaceRepoRoot,
+            message: 'chore: checkpoint CI repair for guidance', allowEmpty: true
+          });
+        }
         return {
           workResult: implDispatch.workResult,
           checkpointResult: buildCheckpoint({
@@ -448,15 +460,17 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         run: input.run,
         tenant: input.tenant,
         role: 'reviewer',
+        ...(input.ciRepair !== undefined ? { ciRepair: input.ciRepair } : {}),
         round: roundNumber,
         reviewContext: {
-          previousRounds: rounds.map(r => r),
+          previousRounds: [...(input.priorCheckpoint?.rounds ?? []), ...rounds],
           routingDistinct: routes.routingInfo.distinct
         },
         toolPolicyMode: 'read_only',
         routeProfileId: routes.reviewerRoute.profileId,
         route: routes.reviewerRoute
       });
+      if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
       lastReviewerLastPosition = reviewDispatch.lastPosition ?? lastReviewerLastPosition;
       if (reviewDispatch.modelPrincipal !== undefined) {
         reviewerPrincipal = reviewDispatch.modelPrincipal;

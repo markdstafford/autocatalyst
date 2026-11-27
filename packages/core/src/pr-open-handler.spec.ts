@@ -758,3 +758,116 @@ describe('handlePullRequestOpen', () => {
     expect(content.body).not.toContain('file(s) changed');
   });
 });
+
+describe('guarded publication', () => {
+  const headSha = 'a'.repeat(40);
+  const targetSha = 'b'.repeat(40);
+  const different = 'c'.repeat(40);
+  function fixture(input: { targets: (string | null)[]; refreshCount?: number; legacy?: boolean; adopt?: boolean; source?: string }) {
+    const runSteps = [
+      makeRunStep({ id: 'step_build', step: 'implementation.build', checkpointResult: cumulativeSummaryCheckpoint }),
+      ...Array.from({ length: input.refreshCount ?? 0 }, (_, i) => makeRunStep({
+        id: `refresh_${i}`, step: 'pr.open', endedAt: timestamp, occurrence: { index: 1 + i, attempt: 1 + i },
+        checkpointResult: { kind: 'publication_stop', code: 'pr_publication_refreshed' }
+      })),
+      makeRunStep({ id: 'step_fin', endedAt: timestamp, occurrence: { index: 4, attempt: 1 },
+        checkpointResult: {
+          ...finalizeCheckpoint, ...(input.legacy ? {} : { attestation: {
+            repository: 'example/demo', branch: 'feature/run_1', base: 'main', targetSha, reviewedSha: headSha, publishSha: headSha
+          } })
+        }
+      }),
+      makeRunStep({ id: 'step_open', step: 'pr.open', occurrence: { index: 5, attempt: 3 },
+        ...(input.adopt ? { checkpointResult: { kind: 'publication_pushed', receipt: {
+          kind: 'publication_push_receipt', runId: 'run_1', repository: 'example/demo', branch: 'feature/run_1', headSha
+        } } } : {})
+      })
+    ];
+    const exact = { provider: 'github', url: 'https://github.com/example/demo/pull/42', number: 42,
+      state: 'open' as const, branch: 'feature/run_1', headRepository: 'example/demo', baseBranch: 'main', headSha };
+    const seam = makeDeps({ runSteps, facts: exact, ...(input.adopt ? { findByBranchBehavior: async () => exact } : {}) });
+    const pushCandidate = vi.fn(async () => 'pushed' as const);
+    return {
+      ...seam, pushCandidate, deps: {
+        ...seam.deps, publicationGit: {
+          readTarget: vi.fn(async () => input.targets.shift() ?? null),
+          readSource: vi.fn(async () => input.source ?? headSha),
+          readCandidate: vi.fn(async () => headSha), pushCandidate,
+          sameTree: vi.fn(), verifyFreeze: vi.fn(), integrate: vi.fn()
+        }
+      }
+    };
+  }
+
+  it('does not push or create on the third invalidation', async () => {
+    const f = fixture({ targets: [different], refreshCount: 2 });
+    await handlePullRequestOpen('run_1', 'tenant_1', f.deps);
+    expect(f.pushCandidate).not.toHaveBeenCalled();
+    expect(f.create).not.toHaveBeenCalled();
+    expect(f.applyDirective).toHaveBeenCalledWith(expect.objectContaining({
+      directive: 'fail', reason: 'pr_publication_refresh_exhausted', expectedStepId: 'step_open',
+      checkpointResult: expect.objectContaining({ refreshCount: 2 })
+    }));
+  });
+
+  it('records a verified receipt but never creates on post-push drift', async () => {
+    const f = fixture({ targets: [targetSha, targetSha, different] });
+    await handlePullRequestOpen('run_1', 'tenant_1', f.deps);
+    expect(f.pushCandidate).toHaveBeenCalledTimes(1);
+    expect(f.create).not.toHaveBeenCalled();
+    expect(f.applyDirective).toHaveBeenCalledWith(expect.objectContaining({
+      directive: 'revise', refreshPublication: true,
+      checkpointResult: expect.objectContaining({ refreshCount: 1, sourcePushed: true, receipt: expect.objectContaining({ headSha }) })
+    }));
+  });
+
+  it('does not record a receipt or create a PR if cancellation wins during the push', async () => {
+    const f = fixture({ targets: [targetSha, targetSha] });
+    const stale = new Error('Publication occurrence changed.');
+    const withResultCommit = vi.fn(async () => { throw stale; });
+
+    await expect(handlePullRequestOpen('run_1', 'tenant_1', { ...f.deps, withResultCommit })).rejects.toBe(stale);
+    expect(f.pushCandidate).toHaveBeenCalledOnce();
+    expect(f.deps.runSteps.updateCheckpoint).not.toHaveBeenCalled();
+    expect(f.create).not.toHaveBeenCalled();
+    expect(f.applyDirective).not.toHaveBeenCalled();
+  });
+
+  it('does not create a PR if the source moved after the verified push', async () => {
+    const f = fixture({ targets: [targetSha, targetSha, targetSha], source: different });
+    await handlePullRequestOpen('run_1', 'tenant_1', f.deps);
+    expect(f.pushCandidate).toHaveBeenCalledTimes(1);
+    expect(f.create).not.toHaveBeenCalled();
+    expect(f.applyDirective).toHaveBeenCalledWith(expect.objectContaining({
+      directive: 'fail', reason: 'pr_publication_push_unverified',
+      checkpointResult: expect.objectContaining({ sourcePushed: true })
+    }));
+  });
+
+  it.each([[null], [targetSha, targetSha, null]])('stops without spending a refresh when a target guard is unverifiable', (...targets) => {
+    const sourcePushed = targets.length > 1;
+    const f = fixture({ targets });
+    return handlePullRequestOpen('run_1', 'tenant_1', f.deps).then(() => {
+      expect(f.create).not.toHaveBeenCalled();
+      expect(f.applyDirective).toHaveBeenCalledWith(expect.objectContaining({
+        directive: 'fail', reason: 'pr_target_verification_failed',
+        checkpointResult: expect.objectContaining({ refreshCount: 0, sourcePushed })
+      }));
+    });
+  });
+
+  it('refreshes an unattested candidate and adopts an exact prior create without another push', async () => {
+    const legacy = fixture({ targets: [targetSha], legacy: true });
+    await handlePullRequestOpen('run_1', 'tenant_1', legacy.deps);
+    expect(legacy.pushCandidate).not.toHaveBeenCalled();
+    expect(legacy.applyDirective).toHaveBeenCalledWith(expect.objectContaining({ refreshPublication: true }));
+
+    const adoption = fixture({ targets: [different], adopt: true });
+    await handlePullRequestOpen('run_1', 'tenant_1', adoption.deps);
+    expect(adoption.pushCandidate).not.toHaveBeenCalled();
+    expect(adoption.create).not.toHaveBeenCalled();
+    expect(adoption.applyDirective).toHaveBeenCalledWith(expect.objectContaining({
+      publicationProvenance: { pullRequestId: 'pr_1', headSha }
+    }));
+  });
+});

@@ -1,3 +1,5 @@
+import { exactRepairBinding, type RepairDecision, type RepairRepository } from './pr-ci-repair.js';
+import { fullGitSha } from './pr-publication.js';
 import { pullRequestStateSchema, type PullRequest, type PullRequestCheckFailureReason, type Run } from '@autocatalyst/api-contract';
 import { z } from 'zod';
 
@@ -13,6 +15,8 @@ import {
   CodeHostCredentialMissingError,
   isCodeHostError,
   type CodeHostCredential,
+  type RequiredCheckEvidence,
+  repositorySlug,
   type CodeHostPort,
   type CodeHostPullRequestFacts,
   type CodeHostTarget,
@@ -27,6 +31,7 @@ export interface DetectPullRequestMergesInput {
   readonly tenant: string;
   readonly maxCount: number;
   readonly timeoutMs: number;
+  readonly admitCiRepair?: boolean;
 }
 
 export interface PullRequestStatusReconciliationResult {
@@ -57,6 +62,15 @@ export interface PullRequestLifecycleDependencies {
   readonly withRunMutation?: WithRunMutation;
   readonly clock?: () => string;
   readonly now?: () => number;
+  readonly repair?: {
+    readonly repository: RepairRepository;
+    readonly limit: number;
+    readonly onDecision: (run: Run, decision: RepairDecision, transition?: OrchestratedRunResult) => Promise<void>;
+    readonly onTerminal: (decision: RepairDecision, state: 'merged' | 'closed') => Promise<boolean>;
+    readonly wake: (run: Run) => void;
+    readonly diagnostic?: (event: string, data: Record<string, unknown>) => void;
+  };
+  readonly batchCursor?: Map<string, { createdAt: string; id: string }>;
 }
 
 // --- Helpers ---
@@ -70,7 +84,7 @@ function resolveCodeHostBinding(project: {
   readonly codeHostSetting: { readonly provider: string; readonly credentialRef?: unknown } | null;
   readonly hostRepository: { readonly provider: string; readonly owner: string; readonly name: string };
 }): ProjectCodeHostBinding | null {
-  if (project.codeHostSetting === null) return null;
+  if (project.codeHostSetting?.provider !== project.hostRepository.provider) return null;
   if (project.codeHostSetting.credentialRef === undefined) return null;
   return {
     target: {
@@ -84,8 +98,9 @@ function resolveCodeHostBinding(project: {
 
 // --- Shared read and commit ---
 
-type PullRequestReadOutcome =
-  | { readonly kind: 'observed'; readonly facts: CodeHostPullRequestFacts }
+export type PullRequestReadOutcome =
+  | { readonly kind: 'observed'; readonly facts: CodeHostPullRequestFacts;
+      readonly repository: string; readonly failures: readonly RequiredCheckEvidence[] | null; readonly requiredPending: boolean }
   | { readonly kind: 'read_failed'; readonly reason: PullRequestCheckFailureReason }
   | { readonly kind: 'internal_failure' };
 
@@ -94,14 +109,19 @@ const codeHostReadFactsSchema = z.object({
   number: z.number().int().positive(),
   url: z.string().url(),
   state: pullRequestStateSchema,
-  branch: z.string().min(1)
+  branch: z.string().min(1),
+  headSha: fullGitSha.optional(),
+  headRepository: z.string().max(250).optional(),
+  baseBranch: z.string().max(250).optional()
 });
 
-async function readPullRequest(
+export async function readPullRequest(
   run: Run,
   pr: PullRequest,
   deps: PullRequestLifecycleDependencies,
-  requireIdentityMatch = false
+  requireIdentityMatch = false,
+  deadlineMs?: number,
+  readCi = false
 ): Promise<PullRequestReadOutcome> {
   let binding;
   try {
@@ -137,12 +157,19 @@ async function readPullRequest(
   }
 
   try {
-    const raw = await port.read({ target: binding.target, number: pr.number, credential });
+    const input = { target: binding.target, number: pr.number, credential, ...(deadlineMs !== undefined ? { deadlineMs } : {}) };
+    const observation = readCi && deadlineMs !== undefined && port.observeCi !== undefined
+      ? await port.observeCi({ ...input, deadlineMs }).catch(async () => ({ facts: await port.read(input), failures: null }))
+      : { facts: await port.read(input), failures: null };
+    const raw = observation.facts;
     const facts = codeHostReadFactsSchema.safeParse(raw);
     if (!facts.success || (requireIdentityMatch && (facts.data.number !== pr.number || facts.data.provider !== binding.target.provider))) {
       return { kind: 'read_failed', reason: 'provider_unavailable' };
     }
-    return { kind: 'observed', facts: facts.data };
+    return {
+      kind: 'observed', facts: facts.data, repository: repositorySlug(binding.target), failures: observation.failures,
+      requiredPending: 'requiredPending' in observation && observation.requiredPending === true
+    };
   } catch (error) {
     if (isCodeHostError(error)) {
       if (error.code === 'authentication_failed') return { kind: 'read_failed', reason: 'authentication_failed' };
@@ -190,17 +217,55 @@ type PerOutcome = Exclude<PullRequestReadOutcome, { kind: 'observed' }> | { kind
 
 async function reconcileSinglePullRequest(
   pr: PullRequest,
-  deps: PullRequestLifecycleDependencies
+  deps: PullRequestLifecycleDependencies,
+  deadlineMs: number,
+  admitCiRepair: boolean
 ): Promise<PerOutcome> {
   const run = await deps.runs.findById(pr.runId);
   if (run === null || run.tenant !== pr.tenant || run.terminal) return { kind: 'internal_failure' };
-  const observation = await readPullRequest(run, pr, deps);
+  const repair = deps.repair;
+  const gate = repair !== undefined && admitCiRepair && run.currentStep === 'pr.human_review'
+    ? await deps.runs.findLatestOpenRunStep?.({ runId: run.id, step: 'pr.human_review' }) : undefined;
+  const observation = await readPullRequest(run, pr, deps, repair !== undefined, deadlineMs, gate != null);
   if (observation.kind !== 'observed') return observation;
-  const { facts } = observation;
+  const { facts, failures, repository } = observation;
   const { state } = facts;
-  if (state === 'open') return { kind: 'open' };
+  if (state === 'open') {
+    if (repair !== undefined && admitCiRepair) {
+      if (gate != null && failures === null) repair.diagnostic?.('repair_ci_unknown', { runId: run.id, pullRequestId: pr.id });
+      if (gate != null && failures !== null && failures.length > 0 && exactRepairBinding(facts, pr, repository) &&
+          facts.headRepository?.toLowerCase() === repository.toLowerCase() && facts.headSha !== undefined &&
+          facts.baseBranch !== undefined && facts.branch === pr.branch && (deps.now ?? Date.now)() < deadlineMs) {
+        const admit = async () => {
+          const result = await repair.repository.admit({
+            run, pr, gateId: gate.id, headSha: facts.headSha!, baseRef: facts.baseBranch!, repository, failures,
+            limit: repair.limit, now: (deps.clock ?? systemClock)(), deadlineMs
+          });
+          if (result !== null) await repair.onDecision(run, result.decision, result.transition);
+          else repair.diagnostic?.('repair_admission_skipped', { runId: run.id, pullRequestId: pr.id, head: facts.headSha });
+        };
+        if (deps.withRunMutation) await deps.withRunMutation(pr, admit);
+        else await admit();
+      } else if (run.currentStep === 'implementation.build') {
+        repair.wake(run);
+      }
+    }
+    return { kind: 'open' };
+  }
 
   const commit = async (applyDirective: ApplyDirective): Promise<PerOutcome> => {
+    if (repair !== undefined) {
+      const attempts = await repair.repository.listByRun(run.id, run.tenant);
+      const active = attempts.find(row => row.currentStepId !== null);
+      if (active !== undefined) {
+        if (!exactRepairBinding(facts, pr, repository) || !await repair.onTerminal(active, state)) return { kind: 'internal_failure' };
+        return { kind: state };
+      }
+      const current = await deps.runs.findById(run.id);
+      if (current?.terminal || current?.currentStep !== 'pr.human_review' || !exactRepairBinding(facts, pr, repository)) {
+        return { kind: 'internal_failure' };
+      }
+    }
     await writeTerminalPullRequest(pr, state, deps);
     await applyDirective(terminalDirective(pr, state, facts, deps.clock ?? systemClock));
     return { kind: state };
@@ -344,7 +409,13 @@ export async function detectPullRequestMerges(
 
   let openPrs: readonly PullRequest[];
   try {
-    openPrs = await deps.pullRequests.listOpen({ tenant: input.tenant, limit: input.maxCount });
+    const after = deps.batchCursor?.get(input.tenant);
+    openPrs = await deps.pullRequests.listOpen({ tenant: input.tenant, limit: input.maxCount, ...(after !== undefined ? { after } : {}) });
+    if (after !== undefined && openPrs.length < input.maxCount) {
+      const first = await deps.pullRequests.listOpen({ tenant: input.tenant, limit: input.maxCount - openPrs.length });
+      const seen = new Set(openPrs.map(pr => pr.id));
+      openPrs = [...openPrs, ...first.filter(pr => !seen.has(pr.id))];
+    }
   } catch {
     // If we cannot even list open PRs we report timedOut=false and zero counts.
     return { checked: 0, merged: 0, closed: 0, failed: 0, timedOut: false };
@@ -356,6 +427,8 @@ export async function detectPullRequestMerges(
       break;
     }
 
+    deps.batchCursor?.set(input.tenant, { createdAt: pr.createdAt, id: pr.id });
+
     // Per-PR error containment: never let one bad PR crash the batch.
     let outcome: PerOutcome;
     try {
@@ -364,7 +437,7 @@ export async function detectPullRequestMerges(
       if (run === null || run.tenant !== pr.tenant || run.terminal) {
         continue;
       }
-      outcome = await reconcileSinglePullRequest(pr, deps);
+      outcome = await reconcileSinglePullRequest(pr, deps, deadlineMs, input.admitCiRepair === true);
     } catch {
       failed += 1;
       continue;

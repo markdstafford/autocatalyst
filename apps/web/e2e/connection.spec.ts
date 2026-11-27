@@ -50,7 +50,7 @@ test('applies a token on commit and keeps the token out of page text', async ({
 
   // Back returns to Runs, which no longer asks to connect: the run list works.
   await page.getByRole('button', { name: 'Back' }).click();
-  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'All runs' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Connect to the control plane' })).toHaveCount(0);
 
   // Reload the Connection page: the stored-token label shows and the field is empty;

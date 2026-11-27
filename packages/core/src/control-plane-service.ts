@@ -1,3 +1,5 @@
+import type { RepairActivityReader } from './pr-ci-repair.js';
+import { publicationRecoveryStep } from './pr-publication.js';
 import { priceRunSessions } from './session-pricing.js';
 import { ArchivedRunRecoveryError, RunTransitionConflictError, FeedbackConcurrentModificationError, type RunReadContext, type TopicRepository } from './domain-repositories.js';
 import { hasSpecConvergenceState, publicSpecCheckpoint, recoverableSelectedSpecCheckpoint } from './spec-convergence.js';
@@ -336,6 +338,7 @@ export interface DefaultControlPlaneServiceOptions {
    * requests fail with a persistence error rather than silently skipping materialization.
    */
   readonly recovery?: RunRecoveryDependencies;
+  readonly prActivity?: RepairActivityReader;
 }
 
 // --- Implementation ---
@@ -500,6 +503,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
   readonly #pullRequests: PullRequestRepository;
   readonly #sessions: SessionRepository;
   readonly #recovery: RunRecoveryDependencies | undefined;
+  readonly #prActivity: RepairActivityReader | undefined;
 
   constructor(options: DefaultControlPlaneServiceOptions) {
     this.#orchestrator = options.orchestrator;
@@ -519,6 +523,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     this.#pullRequests = options.pullRequests;
     this.#sessions = options.sessions;
     this.#recovery = options.recovery;
+    this.#prActivity = options.prActivity;
   }
 
   async lookupProjectIssue(input: ServiceLookupProjectIssueInput): Promise<ProjectIssueLookupResponse> {
@@ -732,7 +737,8 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw new ControlPlaneServiceError('forbidden', 'Run not accessible.');
     }
 
-    const steps = await this.#runSteps.listByRun(input.runId);
+    const persisted = await this.#runSteps.listByRun(input.runId);
+    const steps = this.#prActivity === undefined ? persisted : await this.#prActivity(run, persisted);
     return { steps: steps.map(step => ({ ...step, checkpointResult: publicSpecCheckpoint(step.checkpointResult) })) };
   }
 
@@ -1196,7 +1202,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     if (input.tenant !== input.principal.tenantId) throw new ControlPlaneServiceError('forbidden', 'Tenant not accessible.');
 
     try {
-      return pullRequestReconciliationResponseSchema.parse(await this.#orchestrator.detectMerges(input.tenant));
+      return pullRequestReconciliationResponseSchema.parse(await this.#orchestrator.detectMerges(input.tenant, true));
     } catch (error) {
       if (error instanceof OrchestratorError) {
         throw new ControlPlaneServiceError(mapOrchestratorErrorCode(error.code), error.message, {
@@ -1473,11 +1479,15 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' has no recoverable stopped step.`);
     }
 
+    if (await this.#orchestrator.workspaceHeld?.({ runId: run.id, tenant: run.tenant })) {
+      throw new ControlPlaneServiceError('conflict', 'The workspace is held for authorized host inspection.');
+    }
+
     const stoppedPhase = getRunStepDefinition(stoppedStep.step)?.phase ?? null;
 
     // Commit detection only matters for omitted mode outside the spec phase.
     let hasCommittedCheckpoints = false;
-    if (input.request.mode === undefined && stoppedPhase !== 'spec') {
+    if (input.request.mode === undefined && stoppedPhase !== 'spec' && !publicationRecoveryStep(stoppedStep, run.failureReason ?? undefined)) {
       try {
         hasCommittedCheckpoints = await recovery.detectCommittedCheckpoints({ run });
       } catch (error) {
@@ -1489,6 +1499,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     try {
       plan = resolveRecoveryPlan({
         stoppedStep,
+        ...(run.failureReason != null ? { failureReason: run.failureReason } : {}),
         ...(input.request.mode !== undefined ? { explicitMode: input.request.mode } :
           stoppedStep.step === 'spec.author' && recoverableSelectedSpecCheckpoint(stoppedStep.checkpointResult)
             ? { explicitMode: 'resume' } : {}),
@@ -1532,7 +1543,10 @@ export class DefaultControlPlaneService implements ControlPlaneService {
         runStep: buildEntryRunStep(reDispatchDefinition, startedAt),
         ...(plan.mode === 'resume' && plan.reDispatchStep === 'spec.author' &&
           hasSpecConvergenceState(stoppedStep.checkpointResult) && stoppedStep.checkpointResult !== null
-          ? { destinationCheckpointResult: stoppedStep.checkpointResult } : {})
+          ? { destinationCheckpointResult: stoppedStep.checkpointResult } :
+          plan.reDispatchStep === 'pr.finalize' &&
+            (plan.mode === 'start_over' || publicationRecoveryStep(stoppedStep, run.failureReason ?? undefined))
+            ? { destinationCheckpointResult: { kind: 'publication_recovery_epoch' } } : {})
       }, input.tenant);
     } catch (error) {
       if (isActiveRunConflictError(error)) {

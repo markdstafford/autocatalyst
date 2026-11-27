@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import type { AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
-import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const probeResources = sqliteTable('probe_resources', {
   id: text('id').primaryKey(),
@@ -185,6 +185,7 @@ export const pullRequests = sqliteTable('pull_requests', {
   url: text('url').notNull(),
   state: text('state').notNull(),
   branch: text('branch').notNull(),
+  autocatalystHeadSha: text('autocatalyst_head_sha'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull()
 }, (table) => [
@@ -204,6 +205,35 @@ export const runSteps = sqliteTable('run_steps', {
   checkpointResultJson: text('checkpoint_result_json')
 }, (table) => [
   index('run_steps_run_started_idx').on(table.runId, table.startedAt)
+]);
+
+export const prCiRepairHeads = sqliteTable('pr_ci_repair_heads', {
+  pullRequestId: text('pull_request_id').notNull().references(() => pullRequests.id),
+  headSha: text('head_sha').notNull(),
+  gateStepId: text('gate_step_id').notNull().references(() => runSteps.id),
+  repairStepId: text('repair_step_id').unique().references(() => runSteps.id),
+  currentStepId: text('current_step_id').references(() => runSteps.id),
+  outcomeStepId: text('outcome_step_id').references(() => runSteps.id),
+  ordinal: integer('ordinal'),
+  limitAtDecision: integer('limit_at_decision').notNull(),
+  admittedCount: integer('admitted_count').notNull(),
+  state: text('state', { enum: ['external', 'exhausted', 'queued', 'running', 'awaiting_human', 'publishing', 'pushed', 'stopped', 'superseded'] }).notNull(),
+  baseRef: text('base_ref').notNull(),
+  failureDetailsJson: text('failure_details_json').notNull(),
+  ownerEpoch: text('owner_epoch'),
+  publishHeadSha: text('publish_head_sha'),
+  candidateSha: text('candidate_sha'),
+  pushReceiptJson: text('push_receipt_json'),
+  refreshCount: integer('refresh_count').notNull().default(0),
+  stopCode: text('stop_code'),
+  workspaceHold: integer('workspace_hold', { mode: 'boolean' }).notNull().default(false),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull()
+}, (table) => [
+  primaryKey({ columns: [table.pullRequestId, table.headSha] }),
+  uniqueIndex('pr_ci_repair_heads_ordinal').on(table.pullRequestId, table.ordinal),
+  uniqueIndex('pr_ci_repair_heads_one_active').on(table.pullRequestId)
+    .where(sql`${table.state} IN ('queued','running','awaiting_human','publishing')`)
 ]);
 
 export const sessions = sqliteTable('sessions', {

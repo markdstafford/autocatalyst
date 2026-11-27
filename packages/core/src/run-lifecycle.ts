@@ -59,6 +59,8 @@ export interface ApplyRunDirectiveInput {
   readonly checkpointResult?: JsonValue;
   readonly destinationCheckpointResult?: JsonValue;
   readonly reason?: string;
+  readonly refreshPublication?: true;
+  readonly publicationProvenance?: { readonly pullRequestId: string; readonly headSha: string };
   readonly clock?: () => string;
 }
 
@@ -135,7 +137,11 @@ export async function applyRunDirective(input: ApplyRunDirectiveInput): Promise<
     throw new RunLifecycleError('terminal_run', `Run '${input.runId}' is terminal.`);
   }
   const workflow = await requireRunWorkflow({ kind: 'existing_run', run: existing }, input.workflowResolver);
-  const transition = nextWorkflowStep(workflow, existing.currentStep, input.directive);
+  const transition: TransitionResult =
+    input.refreshPublication && existing.currentStep === 'pr.open' && input.directive === 'revise' &&
+      workflow.steps.includes('pr.finalize') && workflow.steps.includes('pr.open')
+      ? { ok: true, workflowId: workflow.id, from: 'pr.open', directive: 'revise', to: 'pr.finalize' }
+      : nextWorkflowStep(workflow, existing.currentStep, input.directive);
   if (!transition.ok) {
     throw new RunLifecycleError('invalid_transition', transition.message, { transitionCode: transition.code });
   }
@@ -155,6 +161,7 @@ export async function applyRunDirective(input: ApplyRunDirectiveInput): Promise<
       runStep: buildEntryRunStep(step, now(input.clock)),
       ...(input.sourceRunStepId !== undefined ? { sourceRunStepId: input.sourceRunStepId }
         : sourceRunStep !== null ? { sourceRunStepId: sourceRunStep.id } : {}),
+      ...(input.publicationProvenance !== undefined ? { publicationProvenance: input.publicationProvenance } : {}),
       ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {}),
       ...(input.destinationCheckpointResult !== undefined ? { destinationCheckpointResult: input.destinationCheckpointResult } : {}),
       ...(input.directive === 'fail' && input.reason !== undefined ? { failureReason: input.reason } : {})

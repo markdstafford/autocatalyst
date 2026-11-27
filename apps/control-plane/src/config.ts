@@ -33,6 +33,7 @@ export interface ControlPlaneAppConfig {
   readonly realRunnerDispatch?: RealRunnerDispatchConfig;
   /** GitHub username to stamp as specced_by on spec.author results. Read from GITHUB_LOGIN env var. */
   readonly specAuthorIdentity?: string;
+  readonly pullRequestCiRepairLimit?: number;
   readonly pullRequestReconciliationTicker?: PullRequestReconciliationTickerConfig;
   /**
    * Absolute path to a built web client directory to serve from the control-plane
@@ -155,6 +156,15 @@ function parseRealRunnerDispatch(
     enabled: true,
     ...(defaultProviderProfileId !== undefined ? { defaultProviderProfileId } : {})
   };
+}
+
+export function parsePullRequestCiRepairLimit(value: string | undefined): number {
+  if (value === undefined) return 2;
+  const limit = Number(value);
+  if (!/^\d+$/u.test(value) || !Number.isSafeInteger(limit)) {
+    throw new Error('AUTOCATALYST_PR_CI_REPAIR_LIMIT must be a nonnegative safe integer.');
+  }
+  return limit;
 }
 
 function parsePullRequestReconciliationTicker(
@@ -285,6 +295,8 @@ export function readControlPlaneAppConfig(
     bearerToken: parseBearerToken(bearerTokenValue),
     masterSecret: parseMasterSecret(masterSecretValue),
     runConcurrency: parseRunConcurrency(runConcurrencyValue),
+    ...(env['AUTOCATALYST_PR_CI_REPAIR_LIMIT'] !== undefined
+      ? { pullRequestCiRepairLimit: parsePullRequestCiRepairLimit(env['AUTOCATALYST_PR_CI_REPAIR_LIMIT']) } : {}),
     ...(workspaceRoots !== undefined ? { workspaceRoots } : {}),
     ...(realRunnerDispatch !== undefined ? { realRunnerDispatch } : {}),
     ...(specAuthorIdentity !== undefined ? { specAuthorIdentity } : {}),

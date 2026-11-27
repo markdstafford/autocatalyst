@@ -304,9 +304,10 @@ export function createLayeredConvergenceEngine(
     };
 
     for (let roundNumber = 1; roundNumber <= maxRounds; roundNumber++) {
+      if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
       // 1) Implementer dispatch
       const implReviewContext: ReviewContext = {
-        previousRounds: state.allRounds.map((r) => r),
+        previousRounds: [...(input.priorCheckpoint?.rounds ?? []), ...state.allRounds],
         routingDistinct: routes.routingInfo.distinct,
         ...(state.allRounds.length === 0 && input.humanGuidance !== undefined
           ? { humanGuidance: input.humanGuidance }
@@ -336,6 +337,7 @@ export function createLayeredConvergenceEngine(
         run: input.run,
         tenant: input.tenant,
         role: 'implementer',
+        ...(input.ciRepair !== undefined ? { ciRepair: input.ciRepair } : {}),
         round: roundNumber,
         reviewContext: implReviewContext,
         toolPolicyMode: 'write',
@@ -343,7 +345,14 @@ export function createLayeredConvergenceEngine(
         route: routes.implementerRoute
       });
 
+      if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
       if (implDispatch.workResult.directive === 'needs_input') {
+        if (input.ciRepair !== undefined && resolvedWorkspace !== undefined) {
+          await options.git.commitFiles({
+            runId: input.runId, workspaceRepoRoot: resolvedWorkspace.workspaceRepoRoot,
+            message: 'chore: checkpoint CI repair for guidance', allowEmpty: true
+          });
+        }
         state.lastImplementerLastPosition =
           implDispatch.lastPosition ?? state.lastImplementerLastPosition;
         return { kind: 'failed', workResult: implDispatch.workResult };
@@ -455,9 +464,10 @@ export function createLayeredConvergenceEngine(
         run: input.run,
         tenant: input.tenant,
         role: 'reviewer',
+        ...(input.ciRepair !== undefined ? { ciRepair: input.ciRepair } : {}),
         round: roundNumber,
         reviewContext: {
-          previousRounds: state.allRounds.map((r) => r),
+          previousRounds: [...(input.priorCheckpoint?.rounds ?? []), ...state.allRounds],
           routingDistinct: routes.routingInfo.distinct,
           altitudeContext: {
             altitude,
@@ -471,6 +481,7 @@ export function createLayeredConvergenceEngine(
         routeProfileId: routes.reviewerRoute.profileId,
         route: routes.reviewerRoute
       });
+      if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
       state.lastReviewerLastPosition =
         reviewDispatch.lastPosition ?? state.lastReviewerLastPosition;
       if (reviewDispatch.modelPrincipal !== undefined) {
@@ -749,7 +760,8 @@ export function createLayeredConvergenceEngine(
       );
     }
 
-    const policy = getPolicy(input.workflow, input.stepDefinition.id);
+    const configuredPolicy = getPolicy(input.workflow, input.stepDefinition.id);
+    const policy = input.ciRepair !== undefined ? { ...configuredPolicy, depth: 'build_only' as const } : configuredPolicy;
     const maxRounds = policy.maxRounds;
     const ladder = getImplementationAltitudeLadder(policy);
     const finalAltitude = ladder[ladder.length - 1]!;
@@ -780,7 +792,7 @@ export function createLayeredConvergenceEngine(
     let openHumanImplFeedback: readonly Feedback[] = [];
     try {
       const allFeedback = await options.feedback.listByRun(input.runId);
-      openHumanImplFeedback = allFeedback.filter(
+      openHumanImplFeedback = input.ciRepair !== undefined ? [] : allFeedback.filter(
         (fb) =>
           fb.target === 'implementation' &&
           fb.status === 'open' &&

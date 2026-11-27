@@ -134,6 +134,22 @@ describe('ControlPlaneClientProvider', () => {
     expect(conn().authorization).toBe('unauthorized');
   });
 
+  it('lets the collection owner report a current 401 without observing obsolete list reads', async () => {
+    const stub: typeof globalThis.fetch = async () =>
+      jsonResponse({ error: { code: 'unauthorized', message: 'Unauthorized' } }, 401);
+    renderWithStub(stub);
+    const source = conn().client;
+    await act(async () => {
+      await expect(source.listRuns({ projectId: 'fixture', limit: 50 })).rejects.toMatchObject({ status: 401 });
+    });
+    expect(conn().authorization).toBe('unknown');
+    await act(async () => { conn().setToken('replacement-test-token'); });
+    await act(async () => { conn().reportListUnauthorized(source); });
+    expect(conn().authorization).toBe('unknown');
+    await act(async () => { conn().reportListUnauthorized(conn().client); });
+    expect(conn().authorization).toBe('unauthorized');
+  });
+
   it('ignores a late 401 from the previous client after replacing the token', async () => {
     let finish!: (response: Response) => void;
     const stub: typeof globalThis.fetch = () => new Promise((resolve) => { finish = resolve; });

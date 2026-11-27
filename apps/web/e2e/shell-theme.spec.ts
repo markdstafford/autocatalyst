@@ -85,7 +85,7 @@ for (const scheme of ['light', 'dark'] as const) {
   test(`rendered shell text meets contrast (${scheme})`, async ({ page, fakeServer }) => {
     await page.emulateMedia({ colorScheme: scheme });
     await page.goto(`${fakeServer.baseUrl}/runs`);
-    await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'All runs' })).toBeVisible();
 
     // Header title (primary text) and the empty-state line (subtext) on background.
     expect(await textContrast(page, 'h1')).toBeGreaterThanOrEqual(4.5);

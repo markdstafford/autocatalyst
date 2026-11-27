@@ -49,14 +49,14 @@ test('serves the built shell and loads only from the same origin', async ({ page
 
 test('serves /runs and the not-found page on direct loads', async ({ page, fakeServer }) => {
   await page.goto(`${fakeServer.baseUrl}/runs`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'All runs' })).toBeVisible();
 
   await page.goto(`${fakeServer.baseUrl}/not-a-route`);
   await expect(page.getByRole('heading', { name: 'Page not found' })).toBeVisible();
 
   // The not-found page links back to /runs and navigation renders the shell.
   await page.getByRole('link', { name: 'Back to runs' }).click();
-  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'All runs' })).toBeVisible();
 
   expect(await fakeServer.readLaunchCount()).toBe(0);
 });
@@ -69,7 +69,7 @@ test('does not serve the dev component gallery from the production build', async
 
   // The not-found page links back to /runs and navigation renders the shell.
   await page.getByRole('link', { name: 'Back to runs' }).click();
-  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'All runs' })).toBeVisible();
 
   expect(await fakeServer.readLaunchCount()).toBe(0);
 });
@@ -81,7 +81,7 @@ test('applies a dark theme before mount under an emulated dark system preference
   await page.emulateMedia({ colorScheme: 'dark' });
 
   await page.goto(`${fakeServer.baseUrl}/`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'All runs' })).toBeVisible();
 
   // No storage was injected, so the first-paint script resolves the system scheme
   // to the default dark theme slot.
@@ -95,12 +95,12 @@ test('applies a dark theme before mount under an emulated dark system preference
 
 test('restart keeps serving the shell after a reload', async ({ page, fakeServer }) => {
   await page.goto(`${fakeServer.baseUrl}/`);
-  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'All runs' })).toBeVisible();
 
   await fakeServer.restart();
 
   await page.reload();
-  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'All runs' })).toBeVisible();
 
   expect(await fakeServer.readLaunchCount()).toBe(0);
 });

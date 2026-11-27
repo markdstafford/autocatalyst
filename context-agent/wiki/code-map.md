@@ -7,7 +7,7 @@
 - Runtime Micromanager source, pin, synchronization, fidelity checks and E2E handoff: [micromanager-runtime.md](micromanager-runtime.md).
 - Web client design system (tokens, shell dimensions, alignment rules, component rules): [design-system.md](design-system.md).
 
-Last updated: 2026-11-27 (run operator actions, #153).
+Last updated: 2026-11-27 (run operator actions and named run views, #153 and #156).
 
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
@@ -15,12 +15,48 @@ Last updated: 2026-11-27 (run operator actions, #153).
 ## Run operator actions (#153)
 
 - `packages/api-contract/src/run-operator-actions.ts` defines POST `/v1/runs/:id/{cancel,archive,unarchive,set-step}` and PATCH `/v1/runs/:id`, their strict bodies, and the shared `{ run }` response. `routes.ts` applies `runOperatorPolicy` using the raw ID before body/param validation. The service and SDK expose `cancelRun`, `archiveRun`, `unarchiveRun`, `setRunStep`, and `renameRun`.
-- Migration `0012_run_archive.sql` adds nullable `runs.archived_at` (`Run.archivedAt` when present). Archive is terminal-only and idempotent; a failed run must be unarchived before recovery. The list's `archived=exclude|include|only` filter runs in SQL before cursor/limit. Direct and child reads do not filter archived rows.
+- Migration `0013_run_archive.sql` adds nullable `runs.archived_at` (`Run.archivedAt` when present). Archive is terminal-only and idempotent; a failed run must be unarchived before recovery. The list's `archived=exclude|include|only` filter runs in SQL before cursor/limit. Direct and child reads do not filter archived rows.
 - `DrizzleTopicRepository.updateTitle` scopes rename to the tenant and topic. The list join and `resolveRunContext` supply `topics.title` and `projectId` together to `mapRunToApiRun`. Every run on the topic reflects the new title; `trackedIssue.title` is unchanged. Archive, unarchive, and rename emit no run transition.
-- `DefaultOrchestrator` binds dispatch to an open occurrence via a reservation under the tenant/run lock. Enqueue and session recording happen outside that lock. `recordRunStepTransition` guards the expected step and supplied open occurrence, closes the source, and opens the new attempt atomically. Cancel retries only a source-step mismatch, at most three writes. Ordinary effects and transitions commit together under the lock; `dispatch-result-commits.ts` guards each convergence write without waiting for a session.
+- `DefaultOrchestrator` binds dispatch to an open occurrence via a reservation under the tenant/run lock. Enqueue and session recording happen outside that lock. Automatic continuations reserve the stored checkpoint before the reply strips private spec guidance. `recordRunStepTransition` guards the expected step and supplied open occurrence, closes the source, and opens the new attempt atomically. Cancel retries only a source-step mismatch, at most three writes. Ordinary effects and transitions commit together under the lock; `dispatch-result-commits.ts` guards each convergence write without waiting for a session.
 - Set step validates workflow order and reached history before checking occupancy. A successful override emits `set_step` before reserving automatic work. A move from a pause preserves its question and adds `abandonedBySetStep: true` to the closed row's checkpoint. The replies lock rejects abandoned IDs, and implementation guidance needs the current ID once that run has an abandoned implementation pause.
 - Focused coverage: `run-operator-actions.integration.spec.ts` (production server injection, SQLite, retained SSE, scripted convergence without model calls); `orchestrator.spec.ts` (barriers, stale occurrences, and bounded retry); `run-lifecycle-persistence.spec.ts`, `run-recovery-persistence.spec.ts`, `domain-repositories.spec.ts` (write guards, paging, and projection).
 - Operator behavior is documented in [commands](../../context-human/concepts/commands.md) and [HITL](../../context-human/concepts/hitl.md#recovery-versus-set-step). Unarchive reverses visibility; recovery is failed-only and never substitutes for unarchive. Destructive purge is not shipped.
+
+## Named run views (#156)
+
+- `apps/web/src/runs/run-views.ts` owns the v1 `runViews` shape, defaults table, normalization,
+  and id-based commands. `app.tsx` owns one snapshot for the mounted app, including time spent
+  outside the shell. Add optional fields with independent read defaults in this module, not a
+  version bump or write on read. `theme/preferences.ts` patches the latest raw preference
+  record; the view-store guard prevents downgrading an unsupported version, including in a stale tab.
+- `runs/run-view-list.ts` interprets views via `buildRunViewRequest` and `projectRunViewRows`.
+  Combine address scope and view filters by AND: a view that excludes the address project
+  must return `null` (no SDK call), not an unscoped request. `use-run-list.ts` retains compatible
+  raw rows and page depth, retires the old view's in-flight reads, and reconciles projected selection.
+  See [list lifetime](../decisions/web-run-view-list-lifetime.md) for 401 ownership.
+- `shell/shell-layout.tsx` wires the store, project directory, and view action handlers.
+  `shell/navigation.ts` and `shell/header.tsx` resolve title and project breadcrumb.
+  `shell/run-view-controls.tsx` owns the strip, settings menu, and dialog focus; `ui/menu.tsx`
+  wraps Base UI Menu and Context Menu. `shell/sidebar.tsx` lists views in order; project focus
+  uses the route id, not current-page semantics.
+- In `shell/run-view-controls.spec.tsx`, pointer exit can reset Base UI's active menu item.
+  When switching from hover to keyboard, anchor focus with Home and wait for it before sending
+  ArrowDown. Query the tooltip inside the disabled item, not across the whole shell.
+- `shell/action-registry.ts` defines Shift+N/V/D and comma/period, with punctuation Shift
+  strictness local to the two navigation bindings. `use-action-keys.ts` combines the live
+  shell, list, and detail state. `action-registry-sequences.spec.ts` checks the whole registry
+  for overlaps using these same predicates; import-time validation checks structure only.
+- Verify with `pnpm nx test web` (storage, list ownership, and scripted SDK UI tests) and
+  `pnpm nx e2e web`. `apps/web/e2e/named-views.spec.ts` exercises the built fake-mode app
+  through the connected fixture; it covers project scope, reload, and twelve-chip geometry.
+  Chromium and a loopback server must be available; the managed worktree sandbox blocked
+  both at validation time.
+
+## Guarded PR publication and CI repair (#201)
+
+- `apps/control-plane/src/publication-git.ts` applies containment, clean/idle branch verification, pinned integration and host push guards. `packages/core/src/pr-publication.ts` defines binding, attestation, receipt and initial recovery rules; `orchestrator.ts` and `pr-open-handler.ts` apply them to existing workflow IDs.
+- `packages/github-code-host-adapter/src/github-required-checks.ts` validates complete exact-head evidence; `packages/core/src/pr-lifecycle.ts` bounds reconciliation and tenant-scoped admission. `pr-ci-repair.ts` defines decisions and occurrence ownership; `pr-repair-worker.ts` implements claim, guidance, final review and same-PR publication. `packages/persistence/src/pr-ci-repair-repository.ts` and migration 0012 own atomic state and provenance.
+- `packages/api-contract/src/run-system-activity.ts`, `packages/core/src/pr-system-activity.ts`, and `apps/web/src/runs/pr-system-activity.tsx` expose and display typed evidence without new routes or SSE event types. `use-run-detail.ts` selects the current durable guidance pause; `run-detail-pane.tsx` reuses one form for spec and CI repair guidance. See [PR publication and repair](pr-publication.md) for state and operator gotchas.
 
 ## Run progress and Activity (#152)
 

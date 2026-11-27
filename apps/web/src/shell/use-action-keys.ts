@@ -23,6 +23,7 @@ import {
   type ActionContext,
   type ActionDescriptor,
   type ActionId,
+  type ActionState,
   type SequenceCandidate,
   ACTIONS
 } from './action-registry.js';
@@ -51,15 +52,19 @@ export type ActionHandlers = Partial<Record<ActionId, () => void>>;
 export interface UseActionKeysOptions {
   /** Test seam: the registry to match against. Defaults to the shipped `ACTIONS`. */
   readonly registry?: readonly ActionDescriptor[];
+  getState?(): ActionState;
 }
 
 // ---------------------------------------------------------------------------
 // Shared module-level dispatcher
 // ---------------------------------------------------------------------------
 
-type HandlerGetter = () => ActionHandlers;
+interface KeyOwner {
+  handlers(): ActionHandlers;
+  getState(): ActionState | undefined;
+}
 
-const handlerGetters = new Set<HandlerGetter>();
+const owners = new Set<KeyOwner>();
 let dispatchRegistry: readonly ActionDescriptor[] = ACTIONS;
 let pendingCandidates: SequenceCandidate[] = [];
 let sequenceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -75,8 +80,8 @@ const MODIFIER_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 function resolveHandler(actionId: ActionId): (() => void) | undefined {
-  for (const getter of handlerGetters) {
-    const handler = getter()[actionId];
+  for (const owner of owners) {
+    const handler = owner.handlers()[actionId];
     if (handler !== undefined) {
       return handler;
     }
@@ -118,7 +123,7 @@ function dispatch(event: ShellKeyEvent, ctx: ActionContext, dom: KeyboardEvent):
   }
 
   if (pendingCandidates.length > 0) {
-    const result = advanceSequence(pendingCandidates, event, ctx);
+    const result = advanceSequence(pendingCandidates.filter((candidate) => resolveHandler(candidate.actionId) !== undefined), event, ctx);
     if (result.consumed) {
       if (result.fired !== undefined) {
         clearPending();
@@ -134,13 +139,14 @@ function dispatch(event: ShellKeyEvent, ctx: ActionContext, dom: KeyboardEvent):
     clearPending();
   }
 
-  const combo = matchAction(event, ctx, dispatchRegistry);
+  const bound = dispatchRegistry.filter(({ id }) => resolveHandler(id) !== undefined);
+  const combo = matchAction(event, ctx, bound);
   if (combo !== undefined) {
     fire(combo, dom);
     return;
   }
 
-  const starts = startSequenceCandidates(event, ctx, dispatchRegistry);
+  const starts = startSequenceCandidates(event, ctx, bound);
   if (starts.length > 0) {
     pendingCandidates = starts;
     armTimer();
@@ -149,7 +155,9 @@ function dispatch(event: ShellKeyEvent, ctx: ActionContext, dom: KeyboardEvent):
 }
 
 function onWindowKeyDown(dom: KeyboardEvent): void {
+  const state = Object.assign({}, ...[...owners].map((owner) => owner.getState())) as ActionState;
   const ctx: ActionContext = {
+    ...state,
     isMac: isMacPlatform(),
     textEntry: isTextEntryTarget(dom.target),
     overlayLayerOpen: isOverlayLayerOpen(),
@@ -166,7 +174,7 @@ function ensureListening(): void {
 }
 
 function maybeStopListening(): void {
-  if (listening && handlerGetters.size === 0) {
+  if (listening && owners.size === 0) {
     window.removeEventListener('keydown', onWindowKeyDown);
     listening = false;
     clearPending();
@@ -177,18 +185,21 @@ function maybeStopListening(): void {
 export function useActionKeys(handlers: ActionHandlers, options?: UseActionKeysOptions): void {
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
-  const registryRef = useRef(options?.registry);
-  registryRef.current = options?.registry;
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   useEffect(() => {
-    const getter: HandlerGetter = () => handlersRef.current;
-    handlerGetters.add(getter);
-    if (registryRef.current !== undefined) {
-      dispatchRegistry = registryRef.current;
+    const owner: KeyOwner = {
+      handlers: () => handlersRef.current,
+      getState: () => optionsRef.current?.getState?.()
+    };
+    owners.add(owner);
+    if (optionsRef.current?.registry !== undefined) {
+      dispatchRegistry = optionsRef.current.registry;
     }
     ensureListening();
     return () => {
-      handlerGetters.delete(getter);
+      owners.delete(owner);
       maybeStopListening();
     };
   }, []);

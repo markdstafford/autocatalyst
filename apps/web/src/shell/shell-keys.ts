@@ -82,7 +82,7 @@ export interface ShellKeyContext {
  * and returns only the four shell ids.
  */
 export function resolveShellKeyAction(event: ShellKeyEvent, ctx: ShellKeyContext): ShellKeyId | undefined {
-  const fullContext: ActionContext = { ...ctx, listFocused: false };
+  const fullContext: ActionContext = { ...ctx, listFocused: false, route: 'runs', shortcutsOpen: true };
   const action = matchAction(event, fullContext);
   return action !== undefined && isShellKeyId(action) ? action : undefined;
 }
