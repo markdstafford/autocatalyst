@@ -31,7 +31,9 @@ export interface RetentionBuild {
 /** Release-owned. Add exact entries only after the native and custody qualification. */
 const releaseRetentionBuilds: readonly RetentionBuild[] = Object.freeze([]);
 /** Independent of retention; an unverified launcher uses the shipped fresh path. */
-const releaseNonPersistentClaudeBuilds: ReadonlySet<string> = new Set();
+const releaseNonPersistentClaudeBuilds: ReadonlySet<string> = new Set([
+  'subscription:0.3.177:2.1.328:darwin:arm64'
+]);
 
 export type PrepareFreshConversation = (
   environment: MaterializedExecutionEnvironment, profile?: ResolvedAgentRunnerProfile

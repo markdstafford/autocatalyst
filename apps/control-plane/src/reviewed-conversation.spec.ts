@@ -29,6 +29,14 @@ describe('reviewed conversation admission', () => {
     });
     expect(await resolve(environment)).toEqual({ mode: 'fresh_only', verifiedNonPersistence: false });
     expect(readBuild).toHaveBeenCalledTimes(2);
+
+    const resolveReleaseBuild = createFreshConversationResolver(undefined, readBuild);
+    expect(await resolveReleaseBuild(environment, subscription)).toEqual({
+      mode: 'fresh_only', verifiedNonPersistence: true
+    });
+    expect(await resolveReleaseBuild(environment, apiKey)).toEqual({
+      mode: 'fresh_only', verifiedNonPersistence: false
+    });
   });
 
   it('requires an exact release, including adapter, native runtime, confinement and authentication', () => {
