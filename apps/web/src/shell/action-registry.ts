@@ -15,13 +15,18 @@
  * - `no-text-entry`: blocked in inputs/editable elements and while a menu or dialog is
  *   open. Modifier requirements are now per-chord, not a blanket block.
  * - `anywhere`: fires everywhere, including inside form fields (the settings toggle).
- * - `layer-open`: Escape; the handler decides which layer to close. Eligible even in
- *   text entry and open overlays.
+ * - `layer-open`: Escape; the action predicate checks whether the shell owns the top layer.
  * - `list-focus`: like `no-text-entry` but additionally requires focus inside the run
  *   list (`j`/`k` and the arrows).
  */
+import type { Run } from '@autocatalyst/api-contract';
+
+import type { RunDetailTabId } from '../runs/run-detail-tabs.js';
+import { isSpecGateDecisionAvailable } from '../runs/spec-decision.js';
 import {
   formatBinding,
+  honoursShift,
+  isLetterChord,
   matchesChord,
   type Binding,
   type ShellChord,
@@ -40,7 +45,12 @@ export type ActionId =
   | 'resolve-comment'
   | 'previous-comment'
   | 'next-comment'
-  | 'expand-spec';
+  | 'expand-spec'
+  | 'create-view'
+  | 'rename-view'
+  | 'delete-view'
+  | 'previous-view'
+  | 'next-view';
 
 export type AppliesWhen = 'no-text-entry' | 'anywhere' | 'layer-open' | 'list-focus';
 
@@ -51,31 +61,48 @@ export interface ActionDescriptor {
   /** Every binding that triggers the action; each binding is an alternate. */
   readonly keys: readonly Binding[];
   readonly appliesWhen: AppliesWhen;
+  /** Additional live eligibility shared by dispatch and the conflict suite. */
+  when?(ctx: ActionContext): boolean;
 }
 
-/**
- * The registry, in overlay display order. Shell actions first, then selection. The
- * tooltip text for a control is composed from `name` + the first binding via
- * {@link actionTooltipKey}; components never pass their own key strings.
- */
+const namedView = (ctx: ActionContext): boolean => ctx.route === 'runs' && ctx.viewPosition !== undefined;
+const specReady = (ctx: ActionContext): boolean =>
+  ctx.run !== undefined && ctx.detailTab === 'spec' && ctx.specReady === true;
+const shellAvailable = (ctx: ActionContext): boolean => ctx.startRunOpen !== true;
+
+/** Overlay display order. Controls derive key hints from their action's bindings. */
 export const ACTIONS: readonly ActionDescriptor[] = [
-  { id: 'sidebar-toggle', name: 'Sidebar', keys: [[{ key: '[' }]], appliesWhen: 'no-text-entry' },
-  { id: 'pane-toggle', name: 'Detail pane', keys: [[{ key: ']' }]], appliesWhen: 'no-text-entry' },
-  { id: 'settings-toggle', name: 'Settings', keys: [[{ key: ',', mod: 'mod' }]], appliesWhen: 'anywhere' },
-  { id: 'open-shortcuts', name: 'Keyboard shortcuts', keys: [[{ key: '?' }]], appliesWhen: 'no-text-entry' },
-  { id: 'close-layer', name: 'Close', keys: [[{ key: 'Escape' }]], appliesWhen: 'layer-open' },
-  { id: 'select-next', name: 'Next run', keys: [[{ key: 'j' }], [{ key: 'ArrowDown' }]], appliesWhen: 'list-focus' },
-  { id: 'select-previous', name: 'Previous run', keys: [[{ key: 'k' }], [{ key: 'ArrowUp' }]], appliesWhen: 'list-focus' },
-  // Spec-gate actions. The decision opens a destructive confirm popover, so it has no single-key
-  // shortcut and no key hint. The lifecycle/navigation actions use single keys and are suppressed in
-  // text entry, menus, and dialogs (including the expanded spec overlay). Beyond the focus-context
-  // guard, the handlers registered in the run-detail pane apply run/spec guards (they no-op when the
-  // Spec tab is not active, the run is not at the gate, or no comment is selected/resolvable).
-  { id: 'spec-gate-decision', name: 'Spec gate decision', keys: [], appliesWhen: 'no-text-entry' },
-  { id: 'resolve-comment', name: 'Resolve comment', keys: [[{ key: 'r' }]], appliesWhen: 'no-text-entry' },
-  { id: 'previous-comment', name: 'Previous comment', keys: [[{ key: 'c', shift: true }]], appliesWhen: 'no-text-entry' },
-  { id: 'next-comment', name: 'Next comment', keys: [[{ key: 'c' }]], appliesWhen: 'no-text-entry' },
-  { id: 'expand-spec', name: 'Expand spec', keys: [[{ key: 'x' }]], appliesWhen: 'no-text-entry' }
+  { id: 'sidebar-toggle', name: 'Sidebar', keys: [[{ key: '[' }]], appliesWhen: 'no-text-entry', when: shellAvailable },
+  { id: 'pane-toggle', name: 'Detail pane', keys: [[{ key: ']' }]], appliesWhen: 'no-text-entry',
+    when: (ctx) => shellAvailable(ctx) && ctx.route === 'runs' },
+  { id: 'settings-toggle', name: 'Settings', keys: [[{ key: ',', mod: 'mod' }]], appliesWhen: 'anywhere',
+    when: (ctx) => shellAvailable(ctx) && !(ctx.route === 'settings' && ctx.settingsCheckPending === true) },
+  { id: 'open-shortcuts', name: 'Keyboard shortcuts', keys: [[{ key: '?' }]], appliesWhen: 'no-text-entry', when: shellAvailable },
+  { id: 'close-layer', name: 'Close', keys: [[{ key: 'Escape' }]], appliesWhen: 'layer-open',
+    when: (ctx) => shellAvailable(ctx) && (ctx.shortcutsOpen === true ||
+      (!ctx.overlayLayerOpen && (ctx.hoverSidebarOpen === true || (ctx.route === 'settings' && !ctx.settingsCheckPending)))) },
+  { id: 'select-next', name: 'Next run', keys: [[{ key: 'j' }], [{ key: 'ArrowDown' }]], appliesWhen: 'list-focus',
+    when: (ctx) => ctx.canSelectNext === true },
+  { id: 'select-previous', name: 'Previous run', keys: [[{ key: 'k' }], [{ key: 'ArrowUp' }]], appliesWhen: 'list-focus',
+    when: (ctx) => ctx.canSelectPrevious === true },
+  { id: 'create-view', name: 'Create view', keys: [[{ key: 'n', shift: true }]], appliesWhen: 'no-text-entry', when: namedView },
+  { id: 'rename-view', name: 'Rename view', keys: [[{ key: 'v', shift: true }]], appliesWhen: 'no-text-entry', when: namedView },
+  { id: 'delete-view', name: 'Delete view', keys: [[{ key: 'd', shift: true }]], appliesWhen: 'no-text-entry',
+    when: (ctx) => namedView(ctx) && ctx.viewPosition !== 'singleton' },
+  { id: 'previous-view', name: 'Previous view', keys: [[{ key: ',', exactShift: true }]], appliesWhen: 'no-text-entry',
+    when: (ctx) => namedView(ctx) && (ctx.viewPosition === 'middle' || ctx.viewPosition === 'last') },
+  { id: 'next-view', name: 'Next view', keys: [[{ key: '.', exactShift: true }]], appliesWhen: 'no-text-entry',
+    when: (ctx) => namedView(ctx) && (ctx.viewPosition === 'middle' || ctx.viewPosition === 'first') },
+  // The decision opens a confirm popover, so it has no single-key shortcut.
+  { id: 'spec-gate-decision', name: 'Spec gate decision', keys: [], appliesWhen: 'no-text-entry',
+    when: (ctx) => ctx.specReady === true && ctx.run !== undefined && isSpecGateDecisionAvailable(ctx.run) },
+  { id: 'resolve-comment', name: 'Resolve comment', keys: [[{ key: 'r' }]], appliesWhen: 'no-text-entry',
+    when: (ctx) => specReady(ctx) && ctx.run !== undefined && isSpecGateDecisionAvailable(ctx.run) && ctx.canResolveComment === true },
+  { id: 'previous-comment', name: 'Previous comment', keys: [[{ key: 'c', shift: true }]], appliesWhen: 'no-text-entry',
+    when: (ctx) => specReady(ctx) && ctx.canSelectPreviousComment === true },
+  { id: 'next-comment', name: 'Next comment', keys: [[{ key: 'c' }]], appliesWhen: 'no-text-entry',
+    when: (ctx) => specReady(ctx) && ctx.canSelectNextComment === true },
+  { id: 'expand-spec', name: 'Expand spec', keys: [[{ key: 'x' }]], appliesWhen: 'no-text-entry', when: specReady }
 ];
 
 /** Look up an action by id. Throws on an unknown id (a programming error). */
@@ -98,8 +125,26 @@ export function actionKeyCaps(id: ActionId, isMac: boolean): string[] {
   return getAction(id).keys.map((binding) => formatBinding(binding, isMac));
 }
 
+/** App state contributed by the mounted shell, list, and detail key owners. */
+export interface ActionState {
+  readonly route?: 'runs' | 'settings' | 'other';
+  readonly viewPosition?: 'singleton' | 'first' | 'middle' | 'last';
+  readonly startRunOpen?: boolean;
+  readonly shortcutsOpen?: boolean;
+  readonly hoverSidebarOpen?: boolean;
+  readonly settingsCheckPending?: boolean;
+  readonly canSelectNext?: boolean;
+  readonly canSelectPrevious?: boolean;
+  readonly run?: Run;
+  readonly detailTab?: RunDetailTabId;
+  readonly specReady?: boolean;
+  readonly canResolveComment?: boolean;
+  readonly canSelectPreviousComment?: boolean;
+  readonly canSelectNextComment?: boolean;
+}
+
 /** Context evaluated at keypress time. */
-export interface ActionContext {
+export interface ActionContext extends ActionState {
   readonly isMac: boolean;
   /** Focus is in a text-entry element. */
   readonly textEntry: boolean;
@@ -110,8 +155,9 @@ export interface ActionContext {
 }
 
 /** Whether an action is eligible to match at all, given the live context. */
-export function isActionEligible(appliesWhen: AppliesWhen, ctx: ActionContext): boolean {
-  switch (appliesWhen) {
+export function isActionEligible(action: ActionDescriptor, ctx: ActionContext): boolean {
+  if (action.when !== undefined && !action.when(ctx)) return false;
+  switch (action.appliesWhen) {
     case 'anywhere':
     case 'layer-open':
       return true;
@@ -137,7 +183,7 @@ export function matchAction(
   actions: readonly ActionDescriptor[] = ACTIONS
 ): ActionId | undefined {
   for (const action of actions) {
-    if (!isActionEligible(action.appliesWhen, ctx)) {
+    if (!isActionEligible(action, ctx)) {
       continue;
     }
     for (const binding of action.keys) {
@@ -153,7 +199,7 @@ export function matchAction(
 export interface SequenceCandidate {
   readonly actionId: ActionId;
   readonly binding: Binding;
-  readonly appliesWhen: AppliesWhen;
+  readonly action: ActionDescriptor;
   /** The index of the next chord to match. */
   readonly nextIndex: number;
 }
@@ -170,12 +216,12 @@ export function startSequenceCandidates(
 ): SequenceCandidate[] {
   const candidates: SequenceCandidate[] = [];
   for (const action of actions) {
-    if (!isActionEligible(action.appliesWhen, ctx)) {
+    if (!isActionEligible(action, ctx)) {
       continue;
     }
     for (const binding of action.keys) {
       if (binding.length > 1 && matchesChord(event, binding[0], ctx.isMac)) {
-        candidates.push({ actionId: action.id, binding, appliesWhen: action.appliesWhen, nextIndex: 1 });
+        candidates.push({ actionId: action.id, binding, action, nextIndex: 1 });
       }
     }
   }
@@ -209,7 +255,7 @@ export function advanceSequence(
 ): SequenceAdvance {
   const survivors = candidates.filter(
     (candidate) =>
-      isActionEligible(candidate.appliesWhen, ctx) &&
+      isActionEligible(candidate.action, ctx) &&
       matchesChord(event, candidate.binding[candidate.nextIndex] as ShellChord, ctx.isMac)
   );
   if (survivors.length === 0) {
@@ -229,67 +275,88 @@ export function advanceSequence(
 // Registry conflict validation
 // ---------------------------------------------------------------------------
 
-function chordKey(chord: ShellChord): string {
-  return [chord.key, chord.code ?? '', chord.mod ?? '', chord.shift === true ? 'S' : '', chord.alt === true ? 'A' : ''].join(
-    '|'
-  );
+function chordEvents(chord: ShellChord, isMac: boolean): ShellKeyEvent[] {
+  const mod = chord.mod === 'mod';
+  const altKey = chord.alt === true;
+  const key = isLetterChord(chord) ? chord.key.toLowerCase() : chord.key;
+  return (honoursShift(chord) ? [chord.shift === true] : [false, true]).map((shiftKey) => ({
+    key,
+    ...(chord.code === undefined ? {} : { code: chord.code }),
+    metaKey: mod && isMac,
+    ctrlKey: mod && !isMac,
+    altKey,
+    shiftKey,
+    getModifierState: () => false
+  }));
 }
 
-function bindingKey(binding: Binding): string {
-  return binding.map(chordKey).join('>>');
+// A concrete event that both chords accept is an overlap, even if one binding
+// accepts additional Shift states or the descriptors display differently.
+function chordsOverlap(a: ShellChord, b: ShellChord, isMac: boolean): boolean {
+  return chordEvents(a, isMac).some((event) => matchesChord(event, b, isMac));
 }
 
-function isPrefixOf(shorter: Binding, longer: Binding): boolean {
-  if (shorter.length >= longer.length) {
-    return false;
-  }
-  return shorter.every((chord, index) => chordKey(chord) === chordKey(longer[index] as ShellChord));
+function equivalent(a: ShellChord, b: ShellChord): boolean {
+  return chordEvents(a, false).every((event) => matchesChord(event, b, false)) &&
+    chordEvents(b, false).every((event) => matchesChord(event, a, false));
 }
 
-/**
- * Return a deterministic list of conflict messages for a registry. Two kinds of conflict
- * are rejected, each message naming both actions:
- * - two actions share an identical binding;
- * - one action's complete binding is the prefix of another action's sequence.
- * An empty list means the registry is valid.
- */
-export function findRegistryConflicts(actions: readonly ActionDescriptor[]): string[] {
+function validChord(chord: ShellChord): boolean {
+  return chord != null && typeof chord.key === 'string' && (chord.key === ' ' || chord.key.trim() !== '') &&
+    (chord.mod === undefined || chord.mod === 'mod') &&
+    (chord.code === undefined || (typeof chord.code === 'string' && chord.code.trim() !== '')) &&
+    (chord.shift === undefined || typeof chord.shift === 'boolean') &&
+    (chord.exactShift === undefined || typeof chord.exactShift === 'boolean') &&
+    (chord.alt === undefined || typeof chord.alt === 'boolean') &&
+    (!chord.alt || chord.code !== undefined) &&
+    !['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'AltGraph'].includes(chord.key);
+}
+
+/** Check structure unconditionally, and cross-action overlaps only in supplied contexts. */
+export function findRegistryConflicts(actions: readonly ActionDescriptor[], samples: readonly ActionContext[] = []): string[] {
   const errors: string[] = [];
-
-  const seen = new Map<string, ActionId>();
+  const entries: { readonly action: ActionDescriptor; readonly binding: Binding }[] = [];
   for (const action of actions) {
     for (const binding of action.keys) {
-      const key = bindingKey(binding);
-      const prior = seen.get(key);
-      if (prior !== undefined) {
-        errors.push(
-          `Actions "${prior}" and "${action.id}" both bind ${formatBinding(binding, false)}.`
-        );
+      if (!Array.isArray(binding) || binding.length === 0 || !Array.from(binding).every(validChord)) {
+        errors.push(`Action "${action.id}" has a malformed binding.`);
       } else {
-        seen.set(key, action.id);
+        entries.push({ action, binding });
       }
     }
   }
 
-  for (const action of actions) {
-    for (const binding of action.keys) {
-      for (const other of actions) {
-        for (const otherBinding of other.keys) {
-          if (isPrefixOf(binding, otherBinding)) {
-            errors.push(
-              `Action "${action.id}" binding ${formatBinding(binding, false)} is a prefix of action ` +
-                `"${other.id}" sequence ${formatBinding(otherBinding, false)}.`
-            );
-          }
+  for (const [index, entry] of entries.entries()) {
+    for (const other of entries.slice(index + 1)) {
+      const [a, b] = entry.binding.length <= other.binding.length ? [entry, other] : [other, entry];
+      const label = formatBinding(a.binding, false);
+      if (a.binding.length < b.binding.length) {
+        if (a.binding.every((chord, i) => chordsOverlap(chord, b.binding[i]!, false))) {
+          errors.push(`Action "${a.action.id}" binding ${label} is a prefix of action "${b.action.id}" sequence ${formatBinding(b.binding, false)}.`);
+        }
+      } else if (a.action.id === b.action.id) {
+        if (a.binding.every((chord, i) => equivalent(chord, b.binding[i]!))) {
+          errors.push(`Action "${a.action.id}" repeats binding ${label}.`);
+        }
+      } else {
+        if (samples.length === 0) continue;
+        const overlaps = (isMac: boolean): boolean =>
+          a.binding.every((chord, i) => chordsOverlap(chord, b.binding[i]!, isMac));
+        const mac = overlaps(true);
+        const otherPlatform = overlaps(false);
+        if (!mac && !otherPlatform) continue;
+        const witness = samples.find((ctx) => (ctx.isMac ? mac : otherPlatform) &&
+          isActionEligible(a.action, ctx) && isActionEligible(b.action, ctx));
+        if (witness !== undefined) {
+          errors.push(`Actions "${a.action.id}" and "${b.action.id}" both bind ${formatBinding(a.binding, witness.isMac)} in ${JSON.stringify(witness)}.`);
         }
       }
     }
   }
-
   return errors;
 }
 
-/** Throw if a registry has conflicts, naming each one. */
+/** Import-time structural check only. The test suite owns the sample contexts. */
 export function assertRegistryValid(actions: readonly ActionDescriptor[]): void {
   const conflicts = findRegistryConflicts(actions);
   if (conflicts.length > 0) {
@@ -297,5 +364,4 @@ export function assertRegistryValid(actions: readonly ActionDescriptor[]): void 
   }
 }
 
-// Fail fast at module load if the shipped registry ever develops a conflict.
 assertRegistryValid(ACTIONS);

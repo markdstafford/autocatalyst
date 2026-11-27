@@ -1,5 +1,5 @@
 /**
- * The all-runs table: the single implicit collection view.
+ * The table shared by named run views.
  *
  * It renders the loaded run array in server order (newest first) with a sticky
  * column header, one focusable row per run, and the selected row as the list's one

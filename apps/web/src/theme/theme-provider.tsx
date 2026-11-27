@@ -23,7 +23,7 @@ import {
   MONO_FONT_STACKS,
   readPreferences,
   resolveTheme,
-  writePreferences,
+  patchPreferences,
   type AccentId,
   type BodyFontId,
   type DarkTheme,
@@ -86,14 +86,10 @@ export function ThemeProvider({ children, initialPreferences }: ThemeProviderPro
     [preferences, prefersDark]
   );
 
-  // Apply attributes and persist whenever the resolved theme or preferences change.
+  // Apply attributes whenever the resolved theme or preferences change.
   useEffect(() => {
     applyToDocument(preferences, resolvedTheme);
   }, [preferences, resolvedTheme]);
-
-  useEffect(() => {
-    writePreferences(preferences);
-  }, [preferences]);
 
   // Follow the system color scheme while in system mode.
   useEffect(() => {
@@ -120,6 +116,7 @@ export function ThemeProvider({ children, initialPreferences }: ThemeProviderPro
   }, [preferences.themeMode]);
 
   const updatePreferences = useCallback((patch: Partial<Preferences>): void => {
+    patchPreferences(patch);
     setPreferences((current) => ({ ...current, ...patch }));
   }, []);
 

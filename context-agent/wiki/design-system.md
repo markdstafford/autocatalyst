@@ -273,6 +273,8 @@ horizontal padding, max width 12rem with truncation. Active is `--color-primary`
 `--color-surface` with `--color-text` text, and `--color-surface-1` on hover. A trailing plus chip (named
 "Create named view") uses the inactive style. The strip scrolls horizontally and does not wrap.
 
+**View name dialog.** Focus the labeled Name field, show validation errors inline, submit with Enter, and cancel with Escape.
+
 **Table.**
 - The run list columns are Title, Work kind, Status, Project, and Age, in that order. There is no status
   dot and no separate "Waiting on" column; work kind is a neutral `Chip` and status is the shared status

@@ -150,25 +150,26 @@ function RunDetailBody({ run, detail, currentPrincipalId, currentPrincipalIsHuma
     return () => setFooterContent(null);
   }, [setFooterContent, footerActive, openCount, resolvedCount, hasComments, canPrevious, canNext, selectPrevious, selectNext]);
 
-  // Keyboard handlers for the spec actions, registered only while the Spec tab is active and the spec
-  // is ready; the registry suppresses them in text entry, menus, and the expanded dialog, and these
-  // handler-level guards keep them inert otherwise.
-  const specKeysActive = visibleTab === 'spec' && specReady;
-  useActionKeys(
-    specKeysActive
-      ? {
-          'next-comment': () => controller.selectNext(),
-          'previous-comment': () => controller.selectPrevious(),
-          'resolve-comment': () => {
-            const id = controller.selectedId;
-            if (id !== null && controller.canResolve(id)) {
-              controller.resolve(id);
-            }
-          },
-          'expand-spec': () => setOverlayOpen(true)
-        }
-      : {}
-  );
+  // Supply live detail eligibility to the same predicates exercised by the
+  // registry-wide conflict test. Recheck comment ownership before executing.
+  useActionKeys({
+    'next-comment': selectNext,
+    'previous-comment': selectPrevious,
+    'resolve-comment': () => {
+      const id = controller.selectedId;
+      if (id !== null && controller.canResolve(id)) controller.resolve(id);
+    },
+    'expand-spec': () => setOverlayOpen(true)
+  }, {
+    getState: () => ({
+      run,
+      detailTab: visibleTab,
+      specReady,
+      canSelectPreviousComment: canPrevious,
+      canSelectNextComment: canNext,
+      canResolveComment: controller.selectedId !== null && controller.canResolve(controller.selectedId)
+    })
+  });
 
   const onApprove = (): ReturnType<typeof detail.replyToGate> => detail.replyToGate('approve');
   const onRequestChanges = (): ReturnType<typeof detail.replyToGate> => detail.replyToGate('request_changes');

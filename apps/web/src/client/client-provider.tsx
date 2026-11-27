@@ -6,11 +6,11 @@
  * place. The client is built from `window.location.origin` and the current bearer
  * token, and is rebuilt whenever the token changes.
  *
- * Authorization state: the provider wraps the client's `fetch` so that a `401`
- * from any call flips connection state to `unauthorized` without throwing the
- * `401` up to the route. #132's connection UI reads this state. The wrapper only
- * observes status codes; it never logs, stores, or exposes the token.
+ * Authorization state: the provider observes 401 responses. Collection reads
+ * report their own 401 after checking ownership, so a retired view cannot
+ * change the authorization state. The wrapper never exposes the token.
  */
+import { runCollectionPath } from '@autocatalyst/api-contract';
 import { createControlPlaneClient, type ControlPlaneClient } from '@autocatalyst/sdk';
 import {
   createContext,
@@ -33,8 +33,10 @@ export type AuthorizationState = 'unknown' | 'authorized' | 'unauthorized';
 export interface ControlPlaneConnection {
   /** The typed SDK client. Rebuilt when the token changes. */
   readonly client: ControlPlaneClient;
-  /** Current authorization state; `unauthorized` after any 401. */
+  /** Current authorization state; `unauthorized` after a current 401. */
   readonly authorization: AuthorizationState;
+  /** Report a 401 from a still-current run list read. */
+  reportListUnauthorized(client: ControlPlaneClient): void;
   /** Store a new bearer token and rebuild the client. */
   setToken(token: string): void;
   /** Clear the bearer token and rebuild the client. */
@@ -73,7 +75,11 @@ export function ControlPlaneClientProvider({
     const observingFetch: typeof globalThis.fetch = async (input, init) => {
       const response = await baseFetch(input, init);
       if (response.status === UNAUTHORIZED_STATUS && activeClient.current === scopedClient) {
-        setUnauthorizedClient(scopedClient);
+        const url = input instanceof Request ? input.url : String(input);
+        const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+        if (method !== 'GET' || new URL(url, window.location.origin).pathname !== runCollectionPath) {
+          setUnauthorizedClient(scopedClient);
+        }
       }
       return response;
     };
@@ -90,6 +96,10 @@ export function ControlPlaneClientProvider({
     return () => { activeClient.current = undefined; };
   }, [client]);
   const authorization: AuthorizationState = unauthorizedClient === client ? 'unauthorized' : 'unknown';
+
+  const reportListUnauthorized = useCallback((source: ControlPlaneClient): void => {
+    if (activeClient.current === source) setUnauthorizedClient(source);
+  }, []);
 
   const setToken = useCallback((next: string): void => {
     writeBearerToken(next);
@@ -114,8 +124,8 @@ export function ControlPlaneClientProvider({
   );
 
   const value = useMemo<ControlPlaneConnection>(
-    () => ({ client, authorization, setToken, clearToken, createTestClient }),
-    [client, authorization, setToken, clearToken, createTestClient]
+    () => ({ client, authorization, reportListUnauthorized, setToken, clearToken, createTestClient }),
+    [client, authorization, reportListUnauthorized, setToken, clearToken, createTestClient]
   );
 
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>;

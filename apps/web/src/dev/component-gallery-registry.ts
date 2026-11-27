@@ -112,6 +112,12 @@ export const GALLERY_ENTRIES: readonly GalleryEntry[] = [
     kind: 'base-ui-wrapper'
   },
   {
+    id: 'menu',
+    title: 'Menu',
+    description: 'Actions with shortcut caps and an explanation for an unavailable item.',
+    kind: 'base-ui-wrapper'
+  },
+  {
     id: 'popover',
     title: 'Popover',
     description: 'Anchored confirm popover opened from a trigger button, closing on Escape.',

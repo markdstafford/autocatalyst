@@ -31,6 +31,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { hasBearerToken } from '../auth/token-store.js';
 import { ProjectDirectoryProvider, useProjectDirectory } from '../projects/project-directory.js';
 import { RunDetailFooterProvider, useRunDetailFooter } from '../runs/run-detail-footer.js';
+import type { RunView, RunViewsState } from '../runs/run-views.js';
 import { StartRunDialog } from '../runs/start-run-dialog.js';
 import { clampPaneWidth } from '../theme/preferences.js';
 import { useTheme } from '../theme/theme-provider.js';
@@ -40,13 +41,15 @@ import { Header } from './header.js';
 import { CONNECTION_PATH, RUNS_PATH, isRunsPath, isSettingsPath, projectIdFromSearch } from './navigation.js';
 import { ShortcutsOverlay } from './shortcuts-overlay.js';
 import { Sidebar, type SidebarMode } from './sidebar.js';
-import { useShellKeys } from './use-shell-keys.js';
+import { RunViewChips, RunViewDialog, RunViewSettings, useRunViewControls } from './run-view-controls.js';
+import { useActionKeys } from './use-action-keys.js';
 
 /**
  * State the shell shares with the runs route so the list and the footer agree on the
  * detail pane. Provided via React Router's outlet context.
  */
 export interface RunsOutletContext {
+  readonly activeView: RunView;
   /** Whether the side detail pane is shown. */
   readonly detailPaneVisible: boolean;
   /** Current side-pane width in px. */
@@ -58,30 +61,31 @@ export interface RunsOutletContext {
   readonly receiveCreatedRun: { current: ((run: Run) => void) | null };
 }
 
-export function ShellLayout(): ReactNode {
+export function ShellLayout({ runViews }: { readonly runViews: RunViewsState }): ReactNode {
   // The shell-level connection state must wrap the layout so `closeSettings`, the
   // sidebar, and the Connection page (an outlet descendant) all read one provider.
   return (
     <ConnectionStateProvider>
       <RunDetailFooterProvider>
         <ProjectDirectoryProvider>
-          <ShellLayoutInner />
+          <ShellLayoutInner views={runViews} />
         </ProjectDirectoryProvider>
       </RunDetailFooterProvider>
     </ConnectionStateProvider>
   );
 }
 
-function ShellLayoutInner(): ReactNode {
+function ShellLayoutInner({ views }: { readonly views: RunViewsState }): ReactNode {
   const { preferences, updatePreferences } = useTheme();
   const connectionState = useConnectionState();
   const runDetailFooter = useRunDetailFooter();
-  const { projects } = useProjectDirectory();
+  const { projects, phase: projectPhase } = useProjectDirectory();
   const sidebarOpen = preferences.sidebarOpen;
   const location = useLocation();
   const navigate = useNavigate();
   const settings = isSettingsPath(location.pathname);
   const paneEnabled = isRunsPath(location.pathname);
+  const viewControls = useRunViewControls(views, paneEnabled);
   const activeProjectId = paneEnabled ? projectIdFromSearch(location.search) : undefined;
   const projectName = projects.find((project) => project.id === activeProjectId)?.displayName;
   // The pane only renders once a run list exists, i.e. with a stored token. Without
@@ -113,11 +117,10 @@ function ShellLayoutInner(): ReactNode {
   useLayoutEffect(() => {
     if (sidebarOpen && focusProjects.current) {
       focusProjects.current = false;
-      const nav = sidebarRef.current;
-      (nav?.querySelector<HTMLElement>('[data-project-link][aria-current]') ??
-        nav?.querySelector<HTMLElement>('[data-project-link]'))?.focus();
+      const links = [...(sidebarRef.current?.querySelectorAll<HTMLElement>('[data-project-link]') ?? [])];
+      (links.find((link) => link.dataset['projectLink'] === activeProjectId) ?? links[0])?.focus();
     }
-  }, [sidebarOpen]);
+  }, [sidebarOpen, activeProjectId]);
 
   // Remember the route to return to when settings closes. Updated whenever the
   // operator is not in settings.
@@ -167,32 +170,42 @@ function ShellLayoutInner(): ReactNode {
     [updatePreferences]
   );
 
-  useShellKeys({
-    toggleSidebar: () => {
-      setSidebarOpen(!sidebarOpen);
-    },
-    toggleSettings: () => {
-      if (settings) {
-        closeSettings();
-      } else {
+  const position = views.views.findIndex((view) => view.id === views.activeViewId);
+  const moveView = (delta: number): void => {
+    const target = views.views[position + delta];
+    if (target !== undefined) views.commands.activate(target.id);
+  };
+  useActionKeys({
+    'sidebar-toggle': () => setSidebarOpen(!sidebarOpen),
+    'settings-toggle': () => {
+      if (settings) closeSettings();
+      else {
+        viewControls.close();
         openSettings();
       }
     },
-    closeLayer: () => {
-      if (shortcutsOpen) {
-        setShortcutsOpen(false);
-      } else if (hoverOpen) {
-        setHoverOpen(false);
-      } else if (settings) {
-        closeSettings();
-      }
+    'close-layer': () => {
+      if (shortcutsOpen) setShortcutsOpen(false);
+      else if (hoverOpen) setHoverOpen(false);
+      else if (settings) closeSettings();
     },
-    // Only bind the pane toggle on the runs route so `]` is a true no-op elsewhere.
-    ...(paneEnabled ? { togglePane } : {}),
-    openShortcuts: () => {
-      setShortcutsOpen(true);
-    }
-  }, !startRunOpen);
+    'pane-toggle': togglePane,
+    'open-shortcuts': () => setShortcutsOpen(true),
+    'create-view': () => viewControls.open('create'),
+    'rename-view': () => viewControls.open('rename', views.activeView),
+    'delete-view': () => viewControls.open('delete', views.activeView),
+    'previous-view': () => moveView(-1),
+    'next-view': () => moveView(1)
+  }, {
+    getState: () => ({
+      route: settings ? 'settings' : paneEnabled ? 'runs' : 'other',
+      viewPosition: views.views.length === 1 ? 'singleton' : position === 0 ? 'first' : position === views.views.length - 1 ? 'last' : 'middle',
+      shortcutsOpen,
+      startRunOpen,
+      hoverSidebarOpen: hoverOpen,
+      settingsCheckPending: connectionState.isSettingsCheckPending()
+    })
+  });
 
   const sidebarMode: SidebarMode = sidebarOpen ? 'docked' : hoverOpen ? 'overlay' : 'hidden';
 
@@ -204,6 +217,7 @@ function ShellLayoutInner(): ReactNode {
   }, [startRunOpen]);
 
   const outletContext: RunsOutletContext = {
+    activeView: views.activeView,
     detailPaneVisible: preferences.detailPaneVisible,
     sidePaneWidthPx: preferences.sidePaneWidthPx,
     setPaneWidth,
@@ -221,6 +235,9 @@ function ShellLayoutInner(): ReactNode {
             mode={sidebarMode}
             settings={settings}
             projects={projects}
+            views={views.views}
+            activeViewId={views.activeViewId}
+            activateView={views.commands.activate}
             onCloseSettings={closeSettings}
             {...(paneEnabled ? { onStartRun: openStartRun } : {})}
             settingsCheckPending={connectionState.settingsCheckPending}
@@ -229,7 +246,15 @@ function ShellLayoutInner(): ReactNode {
           />
 
           <div className="flex min-w-0 flex-1 flex-col">
-            <Header projectName={projectName} />
+            <Header
+              viewTitle={views.activeView.name}
+              project={activeProjectId === undefined ? undefined : {
+                name: projectName,
+                phase: hasBearerToken() ? projectPhase : 'error'
+              }}
+              viewSettings={paneEnabled ? <RunViewSettings view={views.activeView} controls={viewControls} /> : null}
+              chips={paneEnabled ? <RunViewChips views={views} controls={viewControls} /> : null}
+            />
             <main ref={main} tabIndex={-1} className="min-h-0 flex-1 overflow-hidden bg-background focus:outline-none">
               <Outlet context={outletContext} />
             </main>
@@ -298,6 +323,7 @@ function ShellLayoutInner(): ReactNode {
               receiveCreatedRun.current?.(run);
             });
           }} />
+        <RunViewDialog controls={viewControls} onRunRoute={paneEnabled} />
         <ShortcutsOverlay open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       </div>
     </>

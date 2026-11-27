@@ -39,15 +39,16 @@ afterEach(() => {
 describe('AppRoutes', () => {
   it('redirects / to /runs and shows the shell with the connect empty state', () => {
     renderAt('/');
-    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+    expect(screen.getByRole('heading', { level: 1, name: 'All runs' })).toBeDefined();
     expect(screen.getByRole('heading', { name: 'Connect to the control plane' })).toBeDefined();
     expect(screen.getByRole('button', { name: 'Open connection settings' })).toBeDefined();
   });
 
-  it('marks the Runs sidebar entry as the current page on /runs', () => {
+  it('marks the named view sidebar entry as the current page on /runs', () => {
     renderAt('/runs');
     const runs = screen.getByRole('link', { name: 'Runs' });
-    expect(runs.getAttribute('aria-current')).toBe('page');
+    expect(runs.getAttribute('aria-current')).toBeNull();
+    expect(screen.getByRole('link', { name: 'All runs' }).getAttribute('aria-current')).toBe('page');
   });
 
   it('redirects /settings to /settings/connection and shows the Connection page', () => {

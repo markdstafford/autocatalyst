@@ -16,11 +16,12 @@ import { ArrowLeft, FolderGit2, ListChecks, Plus, PlugZap, Settings as SettingsI
 import { forwardRef, type ReactNode } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 
+import type { RunView } from '../runs/run-views.js';
 import { Button } from '../ui/button.js';
 import { Tooltip } from '../ui/tooltip.js';
 import { actionTooltipKey } from './action-registry.js';
 import { isMacPlatform } from './key-utils.js';
-import { CONNECTION_PATH, PROJECTS_PATH, RUNS_PATH, isRunsPath, projectIdFromSearch, projectRunsPath } from './navigation.js';
+import { CONNECTION_PATH, PROJECTS_PATH, RUNS_PATH, isRunsPath, projectRunsPath } from './navigation.js';
 
 export type SidebarMode = 'docked' | 'overlay' | 'hidden';
 
@@ -39,22 +40,25 @@ function rowClass({ isActive }: { isActive: boolean }): string {
     : `${ROW_BASE} text-subtext hover:bg-hover hover:text-text`;
 }
 
-function PrimaryNav({ projects, onStartRun }: {
+interface PrimaryNavProps {
   readonly projects: readonly Project[];
+  readonly views: readonly RunView[];
+  readonly activeViewId: string;
+  activateView(id: string): void;
   onStartRun?(opener: HTMLElement): void;
-}): ReactNode {
+}
+
+function PrimaryNav({ projects, views, activeViewId, activateView, onStartRun }: PrimaryNavProps): ReactNode {
   const location = useLocation();
   const runs = isRunsPath(location.pathname);
-  const projectId = runs ? projectIdFromSearch(location.search) : undefined;
-  const allRunsActive = runs && projectId === undefined;
   return (
     <>
       <div className={TITLE_ROW_CLASSES} data-testid="sidebar-title">
         <span className={TITLE_TEXT_CLASSES}>Autocatalyst</span>
       </div>
-      <div className={`${LIST_CLASSES} min-h-0`}>
-        <div className="flex items-center gap-1">
-          <Link to={RUNS_PATH} className={`${rowClass({ isActive: allRunsActive })} min-w-0 flex-1`} aria-current={allRunsActive ? 'page' : undefined}>
+      <div className={`${LIST_CLASSES} min-h-0 overflow-auto`}>
+        <div className="flex shrink-0 items-center gap-1">
+          <Link to={RUNS_PATH} className={`${rowClass({ isActive: false })} min-w-0 flex-1`}>
             <ListChecks aria-hidden size={14} />
             <span>Runs</span>
           </Link>
@@ -68,25 +72,39 @@ function PrimaryNav({ projects, onStartRun }: {
             </Tooltip>
           ) : null}
         </div>
+        <div role="group" aria-label="Run views" className="flex shrink-0 flex-col gap-0.5">
+          {views.map((view) => {
+            const active = runs && view.id === activeViewId;
+            return (
+              <Link key={view.id}
+                to={runs ? { pathname: location.pathname, search: location.search, hash: location.hash } : RUNS_PATH}
+                className={`${rowClass({ isActive: active })} pl-7`}
+                aria-current={active ? 'page' : undefined}
+                onClick={(event) => {
+                  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+                  if (runs) event.preventDefault();
+                  activateView(view.id);
+                }}>
+                <span className="truncate">{view.name}</span>
+              </Link>
+            );
+          })}
+        </div>
         {projects.length > 0 ? (
-          <div role="group" aria-label="Projects" className="flex min-h-0 flex-col gap-0.5 overflow-auto">
+          <div role="group" aria-label="Projects" className="flex shrink-0 flex-col gap-0.5">
             <div className="flex items-center gap-2 px-2 py-1 text-xs font-medium text-subtext">
               <FolderGit2 aria-hidden size={14} /> Projects
             </div>
-            {projects.map((project) => {
-              const active = project.id === projectId;
-              return (
-                <Link
-                  key={project.id}
-                  data-project-link
-                  to={projectRunsPath(project.id)}
-                  aria-current={active ? 'page' : undefined}
-                  className={`${rowClass({ isActive: active })} pl-7`}
-                >
-                  <span className="truncate">{project.displayName}</span>
-                </Link>
-              );
-            })}
+            {projects.map((project) => (
+              <Link
+                key={project.id}
+                data-project-link={project.id}
+                to={projectRunsPath(project.id)}
+                className={`${rowClass({ isActive: false })} pl-7`}
+              >
+                <span className="truncate">{project.displayName}</span>
+              </Link>
+            ))}
           </div>
         ) : null}
         <NavLink to={CONNECTION_PATH} className={rowClass}>
@@ -166,20 +184,19 @@ const MODE_CLASSES: Readonly<Record<SidebarMode, string>> = {
 
 const BASE_NAV_CLASSES = 'flex flex-col bg-mantle';
 
-export interface SidebarProps {
+export interface SidebarProps extends Omit<PrimaryNavProps, 'projects'> {
   readonly mode: SidebarMode;
   readonly settings: boolean;
   readonly projects?: readonly Project[];
   canLeaveConnection?(): boolean;
   onCloseSettings(): void;
-  onStartRun?(opener: HTMLElement): void;
   /** Whether Connection is checking a token; soft-disables the settings Back button. */
   readonly settingsCheckPending?: boolean;
   onPointerLeave?(event: React.PointerEvent<HTMLElement>): void;
 }
 
 export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
-  { mode, settings, projects = [], canLeaveConnection, onCloseSettings, settingsCheckPending = false, onPointerLeave, onStartRun },
+  { mode, settings, projects = [], views, activeViewId, activateView, canLeaveConnection, onCloseSettings, settingsCheckPending = false, onPointerLeave, onStartRun },
   ref
 ): ReactNode {
   const hidden = mode === 'hidden';
@@ -196,7 +213,7 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
         <SettingsNav onCloseSettings={onCloseSettings} checkPending={settingsCheckPending}
           {...(canLeaveConnection !== undefined ? { canLeaveConnection } : {})} />
       ) : (
-        <PrimaryNav projects={projects} {...(onStartRun !== undefined ? { onStartRun } : {})} />
+        <PrimaryNav projects={projects} views={views} activeViewId={activeViewId} activateView={activateView} {...(onStartRun !== undefined ? { onStartRun } : {})} />
       )}
     </nav>
   );

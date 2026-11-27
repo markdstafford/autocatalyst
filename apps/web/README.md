@@ -6,8 +6,8 @@ tokens, theme preferences, safe token storage, typed SDK access, the first UI
 wrappers, and lazy syntax highlighting. Issue #132 adds the operator **shell**
 (sidebar, header, main area, footer with five zones and a health indicator), the
 **settings frame**, and the **Connection** page where an operator enters the control
-plane bearer token. The run list and detail pane are still **out of scope** here —
-they arrive in #134.
+plane bearer token. The Runs destination has a paged list and detail pane. Named
+views share the same server-ordered list for the current project.
 
 ## Targets
 
@@ -82,8 +82,12 @@ can be a **sequence** of chords (shown separated by "then", e.g. `g then r`, fir
 `SEQUENCE_TIMEOUT_MS`). No shipped action uses a sequence yet. Matching is per-chord and
 exact: letters are lowercase-authored and CapsLock-safe with Shift significant (`j` ≠
 `Shift+J`), printable non-letters such as `?` ignore Shift, `mod` is Cmd/Ctrl by platform,
-and a named `alt` matches the physical `event.code`. Registry validation rejects duplicate
-bindings and sequence-prefix conflicts.
+and a named `alt` matches the physical `event.code`. The view navigation keys
+`,` and `.` also require Shift to be up. On import, the registry rejects malformed
+bindings, repeats within an action, and sequence prefixes. The registry-wide
+duplicate-key test in `action-registry-sequences.spec.ts` checks every shipped action
+and alternate for overlaps in sampled contexts on both platforms. It shares the live
+eligibility predicates and reports a context where both bindings can fire.
 
 | Shortcut | Action |
 | --- | --- |
@@ -92,6 +96,8 @@ bindings and sequence-prefix conflicts.
 | `Cmd+,` (macOS) / `Ctrl+,` | Open and close Settings. Works everywhere, including inside a form field. |
 | `?` | Open the keyboard shortcuts overlay. |
 | `j` / `↓`, `k` / `↑` | Select the next / previous run while focus is inside the run list. |
+| `Shift+N`, `Shift+V`, `Shift+D` | Create, rename, or delete a named run view. Delete requires more than one view. |
+| `,`, `.` | Select the previous or next named run view without wrapping. |
 | `Escape` | Close the top layer: the hover sidebar first, then Settings. |
 
 ## Package aliases
@@ -109,13 +115,14 @@ it; browser code always resolves these two packages through the source aliases.
 Two separate browser `localStorage` keys, read and written inside `try`/`catch` so
 blocked or invalid storage falls back to defaults without crashing:
 
-- **`autocatalyst.preferences`** — operator theme preferences. Fields: `themeMode`
+- **`autocatalyst.preferences`** — one preference record for theme, fonts, sidebar,
+  pane, and named run views. Theme and font fields: `themeMode`
   (`system` | `light` | `dark`), `lightTheme`, `darkTheme`, `primaryAccent`,
   `secondaryAccent`, `bodyFont`, `monoFont`. Unknown ids fall back field-by-field
   while keeping the valid fields. Defaults: `system`, `catppuccin-latte`,
   `catppuccin-mocha`, `sapphire`, `teal`, and the design-system body/mono font stacks.
-  There is no settings UI yet; change preferences by editing this key in browser
-  storage until the appearance/settings screens exist.
+  View commands and theme or layout changes patch only their own fields, keeping
+  unrelated preferences intact.
 - **`autocatalyst.bearerToken`** — the bearer token, kept **separate** from
   preferences because it is secret material, not a preference. `src/auth/token-store.ts`
   exposes write/clear and an internal read used only by the SDK client provider to
@@ -125,15 +132,29 @@ blocked or invalid storage falls back to defaults without crashing:
   wrapper will replace this key with keychain storage (see the proposed ADR-031 / UX
   patch under `context-agent/proposed-human-docs/`).
 
+### Named run views
+
+**All runs** is the starter view. Changes apply immediately. The optional `runViews`
+field saves the ordered views, active ID, and dismissed starter IDs. As described in
+[ADR-031](../../context-human/adrs/adr-031-web-client-architecture.md), views stay in the
+current browser and origin. Tabs keep separate snapshots; for compatible formats,
+the last successful view write wins.
+
+An unsupported version shows the defaults and keeps subsequent view edits in memory
+until reload. Each view write also checks the latest stored version before merging,
+so an older tab cannot overwrite an incompatible value it observes. Other preferences
+can still be saved. New optional view fields get independent defaults when missing or
+invalid. Adding an optional field does not need a version bump or a write on read.
+
 ## SDK client provider
 
 `src/client/client-provider.tsx` builds one `createControlPlaneClient` from
 `window.location.origin` and the current token, and rebuilds it when the token
 changes. Components get the client from `useControlPlaneClient()` (or the full
 connection from `useControlPlaneConnection()`) and **never call `fetch` directly** for
-control-plane routes, so authorization and error handling stay in one place. A `401`
-from any call flips connection state to `unauthorized` without throwing to the route;
-`getHealth()` sends no `Authorization` header, protected calls send
+control-plane routes. A `401` from the current client flips connection state to
+`unauthorized`. The run list reports its own `401` only after checking the read still
+belongs to the active view. `getHealth()` sends no `Authorization` header; protected calls send
 `Authorization: Bearer <token>`.
 
 ## UI wrapper convention
@@ -144,15 +165,14 @@ these components, never Base UI primitives directly. Every icon-only button carr
 `Tooltip`. Icons come only from `lucide-react`, imported by name. Each file's top comment
 states whether it **wraps Base UI** or is **custom** (Base UI has no primitive for it).
 
-- Base UI wrappers: `Button`, `Tooltip`, `Dialog`, `Tabs`, and the form building blocks
+- Base UI wrappers: `Button`, `Tooltip`, `Dialog`, `Menu`, `Popover`, `Select`, `Tabs`, and the form building blocks
   `Input`, `Field`, and `WriteOnlySecretField`. `WriteOnlySecretField` receives only a
   `hasStoredValue` boolean (never a stored secret), is a password input with
   `autocomplete="off"`, and has no mask, reveal, stored badge, or clear/delete control.
 - Custom components: `ResizeHandle` (pane separator), `Chip` (tone label), `EmptyState`,
   `DescriptionList`/`DescriptionItem`, and `Kbd`/`Shortcut`/`ShortcutList` (key caps).
 
-The remaining Base UI wrappers — `Menu`, `Popover`, `Select`, `Switch` — should still be
-added by the first screen that actually uses each one. No component should exist without a
+Add remaining Base UI wrappers, such as `Switch`, when the first screen needs them. No component should exist without a
 screen exercising it, and **every `ui/` component must have a gallery entry** (see below).
 
 ## Component gallery

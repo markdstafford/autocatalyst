@@ -7,11 +7,18 @@ import { headerContentForPath, isRunsPath, isSettingsPath, runPath } from './nav
 
 describe('headerContentForPath', () => {
   it('shows only a title on the top-level Runs view', () => {
-    expect(headerContentForPath('/runs')).toEqual({ title: 'Runs' });
+    expect(headerContentForPath('/runs', 'All runs')).toEqual({ title: 'All runs' });
+  });
+
+  it('keeps project resolution separate from the view title', () => {
+    expect(headerContentForPath('/runs/r1', 'Review', { phase: 'ready', name: 'Fixture app' }))
+      .toEqual({ title: 'Review', breadcrumb: 'Fixture app' });
+    expect(headerContentForPath('/runs', 'Review', { phase: 'loading' }).breadcrumb).toBe('Loading project…');
+    expect(headerContentForPath('/runs', 'Review', { phase: 'ready' }).breadcrumb).toBe('Project unavailable');
   });
 
   it('shows a breadcrumb plus title on the second-level Connection view', () => {
-    expect(headerContentForPath('/settings/connection')).toEqual({
+    expect(headerContentForPath('/settings/connection', 'My review')).toEqual({
       breadcrumb: 'Settings',
       title: 'Connection'
     });

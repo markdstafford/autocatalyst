@@ -137,25 +137,45 @@ export function validatePreferences(input: unknown): Preferences {
   };
 }
 
-/** Read and validate stored preferences; returns defaults on any failure. */
-export function readPreferences(): Preferences {
+// Invalid JSON can be repaired, but a storage read failure must abort a patch.
+function parseRecord(raw: string | null): Record<string, unknown> {
   try {
-    const raw = window.localStorage.getItem(PREFERENCES_STORAGE_KEY);
-    if (raw === null) {
-      return DEFAULT_PREFERENCES;
+    const value: unknown = raw === null ? undefined : JSON.parse(raw);
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
     }
-    return validatePreferences(JSON.parse(raw));
   } catch {
-    return DEFAULT_PREFERENCES;
+    // Invalid JSON.
+  }
+  return {};
+}
+
+export function readPreferenceRecord(): Record<string, unknown> {
+  try {
+    return parseRecord(window.localStorage.getItem(PREFERENCES_STORAGE_KEY));
+  } catch {
+    return {};
   }
 }
 
-/** Persist preferences; swallows storage failures (private mode, quota, blocked). */
-export function writePreferences(preferences: Preferences): void {
+/** Read and validate stored theme and shell preferences. */
+export function readPreferences(): Preferences {
+  return validatePreferences(readPreferenceRecord());
+}
+
+/** Merge a field patch into the latest raw record, optionally guarding the write. */
+export function patchPreferences(
+  patch: Partial<Preferences> & { readonly runViews?: unknown },
+  canWrite?: (record: Readonly<Record<string, unknown>>) => boolean
+): 'written' | 'failed' | 'skipped' {
   try {
-    window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
+    const storage = window.localStorage;
+    const record = parseRecord(storage.getItem(PREFERENCES_STORAGE_KEY));
+    if (canWrite !== undefined && !canWrite(record)) return 'skipped';
+    storage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify({ ...record, ...patch }));
+    return 'written';
   } catch {
-    // Storage unavailable; preferences remain in memory for this session only.
+    return 'failed';
   }
 }
 

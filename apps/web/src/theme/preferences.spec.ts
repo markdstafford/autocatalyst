@@ -6,7 +6,7 @@ import {
   readPreferences,
   resolveTheme,
   validatePreferences,
-  writePreferences
+  patchPreferences
 } from './preferences.js';
 
 afterEach(() => {
@@ -71,17 +71,17 @@ describe('readPreferences', () => {
 
   it('round-trips a valid stored value', () => {
     const prefs = { ...DEFAULT_PREFERENCES, themeMode: 'light' as const, primaryAccent: 'blue' as const };
-    writePreferences(prefs);
+    patchPreferences(prefs);
     expect(readPreferences()).toEqual(prefs);
   });
 });
 
-describe('writePreferences', () => {
+describe('patchPreferences', () => {
   it('does not throw when storage is blocked', () => {
     vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
       throw new Error('quota');
     });
-    expect(() => writePreferences(DEFAULT_PREFERENCES)).not.toThrow();
+    expect(() => patchPreferences(DEFAULT_PREFERENCES)).not.toThrow();
   });
 });
 

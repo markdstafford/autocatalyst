@@ -7,10 +7,37 @@
 - Runtime Micromanager source, pin, synchronization, fidelity checks and E2E handoff: [micromanager-runtime.md](micromanager-runtime.md).
 - Web client design system (tokens, shell dimensions, alignment rules, component rules): [design-system.md](design-system.md).
 
-Last updated: 2026-11-24 (run progress and activity, #152; build-round component coverage).
+Last updated: 2026-11-27 (named run views and view chips, #156).
 
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
+
+## Named run views (#156)
+
+- `apps/web/src/runs/run-views.ts` owns the v1 `runViews` shape, defaults table, normalization,
+  and id-based commands. `app.tsx` owns one snapshot for the mounted app, including time spent
+  outside the shell. Add optional fields with independent read defaults in this module, not a
+  version bump or write on read. `theme/preferences.ts` patches the latest raw preference
+  record; the view-store guard prevents downgrading an unsupported version, including in a stale tab.
+- `runs/run-view-list.ts` interprets views via `buildRunViewRequest` and `projectRunViewRows`.
+  Combine address scope and view filters by AND: a view that excludes the address project
+  must return `null` (no SDK call), not an unscoped request. `use-run-list.ts` retains compatible
+  raw rows and page depth, retires the old view's in-flight reads, and reconciles projected selection.
+  See [list lifetime](../decisions/web-run-view-list-lifetime.md) for 401 ownership.
+- `shell/shell-layout.tsx` wires the store, project directory, and view action handlers.
+  `shell/navigation.ts` and `shell/header.tsx` resolve title and project breadcrumb.
+  `shell/run-view-controls.tsx` owns the strip, settings menu, and dialog focus; `ui/menu.tsx`
+  wraps Base UI Menu and Context Menu. `shell/sidebar.tsx` lists views in order; project focus
+  uses the route id, not current-page semantics.
+- `shell/action-registry.ts` defines Shift+N/V/D and comma/period, with punctuation Shift
+  strictness local to the two navigation bindings. `use-action-keys.ts` combines the live
+  shell, list, and detail state. `action-registry-sequences.spec.ts` checks the whole registry
+  for overlaps using these same predicates; import-time validation checks structure only.
+- Verify with `pnpm nx test web` (storage, list ownership, and scripted SDK UI tests) and
+  `pnpm nx e2e web`. `apps/web/e2e/named-views.spec.ts` exercises the built fake-mode app
+  through the connected fixture; it covers project scope, reload, and twelve-chip geometry.
+  Chromium and a loopback server must be available; the managed worktree sandbox blocked
+  both at validation time.
 
 ## Guarded PR publication and CI repair (#201)
 
