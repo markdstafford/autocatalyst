@@ -29,6 +29,9 @@ Last updated: 2026-11-27 (named run views and view chips, #156).
   `shell/run-view-controls.tsx` owns the strip, settings menu, and dialog focus; `ui/menu.tsx`
   wraps Base UI Menu and Context Menu. `shell/sidebar.tsx` lists views in order; project focus
   uses the route id, not current-page semantics.
+- In `shell/run-view-controls.spec.tsx`, pointer exit can reset Base UI's active menu item.
+  When switching from hover to keyboard, anchor focus with Home and wait for it before sending
+  ArrowDown. Query the tooltip inside the disabled item, not across the whole shell.
 - `shell/action-registry.ts` defines Shift+N/V/D and comma/period, with punctuation Shift
   strictness local to the two navigation bindings. `use-action-keys.ts` combines the live
   shell, list, and detail state. `action-registry-sequences.spec.ts` checks the whole registry

@@ -143,16 +143,23 @@ it('targets the context chip, protects the last view, and restores focus for Esc
   await waitFor(() => expect(document.activeElement).toBe(plus));
 
   await user.click(settings());
-  const disabled = await screen.findByRole('menuitem', { name: 'Delete view' });
+  const menu = within(await screen.findByRole('menu', { name: 'View settings' }));
+  const disabled = menu.getByRole('menuitem', { name: 'Delete view' });
+  const disabledItem = within(disabled);
   expect(disabled.getAttribute('aria-disabled')).toBe('true');
   await user.hover(disabled);
-  expect((await screen.findByRole('tooltip')).textContent).toBe('The last view cannot be deleted');
+  expect((await disabledItem.findByRole('tooltip')).textContent).toBe('The last view cannot be deleted');
   await user.click(disabled);
   expect(screen.queryByRole('dialog')).toBeNull();
   await user.unhover(disabled);
-  await user.keyboard('{ArrowUp}{ArrowDown}');
+  // Pointer exit can reset Base UI's active item. Wait for keyboard focus to
+  // settle on Rename before testing the move to Delete.
+  await user.keyboard('{Home}');
+  await waitFor(() => expect(document.activeElement).toBe(menu.getByRole('menuitem', { name: 'Rename view' })));
+  expect(disabledItem.queryByRole('tooltip')).toBeNull();
+  await user.keyboard('{ArrowDown}');
   await waitFor(() => expect(document.activeElement).toBe(disabled));
-  expect((await screen.findByRole('tooltip')).textContent).toBe('The last view cannot be deleted');
+  expect((await disabledItem.findByRole('tooltip')).textContent).toBe('The last view cannot be deleted');
   expect(document.activeElement).toBe(disabled);
   await user.keyboard('{Enter}');
   expect(screen.queryByRole('dialog')).toBeNull();
