@@ -14,7 +14,7 @@ test('a context from connected state opens Runs already connected', async ({
   const page = await context.newPage();
   try {
     await page.goto(`${fakeServer.baseUrl}/runs`);
-    await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'All runs' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Connect to the control plane' })).toHaveCount(0);
     expect(await fakeServer.readLaunchCount()).toBe(0);
   } finally {

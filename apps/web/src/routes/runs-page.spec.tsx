@@ -15,7 +15,7 @@ import { AppRoutes } from '../app.js';
 import { clearBearerToken, writeBearerToken } from '../auth/token-store.js';
 import { ControlPlaneClientProvider } from '../client/client-provider.js';
 import { makeCreateRunResponse, makeProject, makePullRequest, makeRun } from '../runs/run-fixtures.js';
-import { readPreferences, writePreferences } from '../theme/preferences.js';
+import { readPreferences, patchPreferences } from '../theme/preferences.js';
 import { ThemeProvider } from '../theme/theme-provider.js';
 import type { Project, PullRequest, Run, RunPullRequestRefreshResponse } from '@autocatalyst/api-contract';
 
@@ -371,7 +371,8 @@ describe('RunsPage project scope', () => {
     await screen.findByTestId('run-row-a1');
     const location = () => screen.getByTestId('location').textContent;
     await waitFor(() => expect(location()).toBe('/runs/a1?project=alpha'));
-    expect(screen.getByRole('heading', { name: 'Alpha' })).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'All runs' })).toBeDefined();
+    expect(screen.getByRole('banner').textContent).toContain('Alpha');
     expect(screen.queryByTestId('run-row-b1')).toBeNull();
     await user.click(screen.getByTestId('run-row-a2'));
     expect(location()).toBe('/runs/a2?project=alpha');
@@ -392,7 +393,7 @@ describe('RunsPage project scope', () => {
   it('uses a generic header while keeping an unknown id scoped', async () => {
     renderRuns('/runs?project=unknown');
     await screen.findByText('No runs yet');
-    expect(screen.getByRole('heading', { name: 'Runs' })).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'All runs' })).toBeDefined();
     expect(screen.queryByRole('grid')).toBeNull();
     expect(seam.filters).toEqual(['unknown']);
   });
@@ -507,7 +508,7 @@ describe('start-run wiring', () => {
     const source = filter === 'matching' ? project : makeProject({ id: 'source', displayName: 'Source' });
     seam.projects = filter === 'matching' ? [project] : [project, source];
     writeBearerToken('token-abc');
-    writePreferences({ ...readPreferences(), detailPaneVisible: false });
+    patchPreferences({ ...readPreferences(), detailPaneVisible: false });
     let finishOld!: (response: Response) => void;
     let finishRefresh!: (response: Response) => void;
     seam.listResponses = [

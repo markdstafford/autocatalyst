@@ -28,6 +28,8 @@ export interface DialogProps {
   readonly fullScreen?: boolean;
   /** Visually hide the title (keeps it for the accessible name). Use when the overlay draws its own header. */
   readonly titleVisuallyHidden?: boolean;
+  /** Override the focus target when the dialog opens. */
+  readonly initialFocus?: React.ComponentProps<typeof BaseDialog.Popup>['initialFocus'];
   /** Override the focus target when the dialog closes. */
   readonly finalFocus?: React.ComponentProps<typeof BaseDialog.Popup>['finalFocus'];
   /** Optional test id on the popup. */
@@ -51,6 +53,7 @@ export function Dialog({
   className,
   fullScreen = false,
   titleVisuallyHidden = false,
+  initialFocus,
   finalFocus,
   'data-testid': testId
 }: DialogProps): ReactNode {
@@ -60,7 +63,7 @@ export function Dialog({
     <BaseDialog.Root open={open} onOpenChange={(next) => onOpenChange(next)}>
       <BaseDialog.Portal>
         <BaseDialog.Backdrop className={BACKDROP_CLASSES} data-testid={testId === undefined ? undefined : testId + '-backdrop'} />
-        <BaseDialog.Popup finalFocus={finalFocus} className={`${popupClasses} ${className ?? ''}`.trim()} data-testid={testId}>
+        <BaseDialog.Popup initialFocus={initialFocus} finalFocus={finalFocus} className={`${popupClasses} ${className ?? ''}`.trim()} data-testid={testId}>
           <BaseDialog.Title className={titleClasses}>{title}</BaseDialog.Title>
           {description !== undefined ? (
             <BaseDialog.Description className="mt-1 text-sm text-subtext">

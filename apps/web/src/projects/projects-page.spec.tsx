@@ -157,7 +157,8 @@ describe('Projects page and editor', () => {
     expect(await screen.findByText('No runs yet')).toBeDefined();
     const project = screen.getByRole('link', { name: PROJECT.displayName });
     await user.click(project);
-    expect(screen.getByRole('banner').textContent).toBe(PROJECT.displayName);
+    expect(screen.getByRole('banner').textContent).toContain(PROJECT.displayName);
+    expect(screen.getByRole('heading', { level: 1, name: 'All runs' })).toBeDefined();
     await waitFor(() => expect(client.listRuns).toHaveBeenLastCalledWith({ limit: 50, projectId: PROJECT.id }));
   });
 

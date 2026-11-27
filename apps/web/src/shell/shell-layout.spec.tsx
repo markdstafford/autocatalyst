@@ -119,14 +119,14 @@ describe('settings frame shortcuts', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Connection' })).toBeDefined();
 
     fireEvent.keyDown(document.body, { key: ',', ctrlKey: true });
-    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+    expect(screen.getByRole('heading', { level: 1, name: 'All runs' })).toBeDefined();
   });
 
   it('closes settings on Escape', () => {
     renderApp('/settings/connection');
     expect(screen.getByRole('heading', { level: 1, name: 'Connection' })).toBeDefined();
     fireEvent.keyDown(document.body, { key: 'Escape' });
-    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+    expect(screen.getByRole('heading', { level: 1, name: 'All runs' })).toBeDefined();
   });
 
   it('Escape closes the hover sidebar before closing settings', () => {
@@ -144,7 +144,7 @@ describe('settings frame shortcuts', () => {
 
     // Second Escape closes settings.
     fireEvent.keyDown(document.body, { key: 'Escape' });
-    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+    expect(screen.getByRole('heading', { level: 1, name: 'All runs' })).toBeDefined();
   });
 });
 
@@ -205,7 +205,7 @@ describe('settings close guard while Connection is checking', () => {
 
     // After the check settles, the same shortcut closes settings again.
     fireEvent.keyDown(document.body, { key: ',', ctrlKey: true });
-    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+    expect(screen.getByRole('heading', { level: 1, name: 'All runs' })).toBeDefined();
   });
 
   it('refuses Escape (close-layer) while checking and allows it again after the check settles', async () => {
@@ -223,7 +223,7 @@ describe('settings close guard while Connection is checking', () => {
 
     // After success the field is empty, so Escape is an empty-field close-layer again.
     fireEvent.keyDown(document.body, { key: 'Escape' });
-    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+    expect(screen.getByRole('heading', { level: 1, name: 'All runs' })).toBeDefined();
   });
 
   it('soft-disables Back while checking and leaves after a successful commit', async () => {
@@ -243,7 +243,7 @@ describe('settings close guard while Connection is checking', () => {
     expect(await screen.findByText('Connected')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Back' }).getAttribute('aria-disabled')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Back' }));
-    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+    expect(screen.getByRole('heading', { level: 1, name: 'All runs' })).toBeDefined();
   });
 
   it('keeps Connection open if clicking Projects starts a check on blur', async () => {
@@ -315,7 +315,7 @@ describe('settings close guard while Connection is checking', () => {
     });
     expect(await screen.findByText('Connected')).toBeDefined();
     await userEvent.click(screen.getByRole('button', { name: 'Back' }));
-    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+    expect(screen.getByRole('heading', { level: 1, name: 'All runs' })).toBeDefined();
   });
 });
 
@@ -332,7 +332,7 @@ describe('shortcuts overlay', () => {
 
     fireEvent.keyDown(document.body, { key: 'Escape' });
     // Closing the overlay must not leave or change the runs route.
-    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+    expect(screen.getByRole('heading', { level: 1, name: 'All runs' })).toBeDefined();
     await waitFor(() => {
       expect(screen.queryByRole('dialog', { name: 'Keyboard shortcuts' })).toBeNull();
     });

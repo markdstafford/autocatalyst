@@ -47,14 +47,20 @@ export interface HeaderContent {
   readonly title: string;
 }
 
-/**
- * Header content for a pathname. Top-level views show only a title; deeper views
- * show a breadcrumb plus a title.
- */
-export function headerContentForPath(pathname: string, projectName?: string): HeaderContent {
+export interface ProjectBreadcrumb {
+  readonly phase: 'loading' | 'ready' | 'error';
+  readonly name?: string | undefined;
+}
+
+/** Project scope is a breadcrumb, never the name of the view. */
+export function headerContentForPath(pathname: string, viewTitle: string, project?: ProjectBreadcrumb): HeaderContent {
   if (isSettingsPath(pathname)) {
     const projects = pathname === PROJECTS_PATH || pathname.startsWith(`${PROJECTS_PATH}/`);
     return { breadcrumb: 'Settings', title: projects ? 'Projects' : 'Connection' };
   }
-  return { title: projectName ?? 'Runs' };
+  if (project === undefined) return { title: viewTitle };
+  return {
+    title: viewTitle,
+    breadcrumb: project.name ?? (project.phase === 'loading' ? 'Loading project…' : 'Project unavailable')
+  };
 }

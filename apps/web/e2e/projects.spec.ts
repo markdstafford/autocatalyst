@@ -161,8 +161,10 @@ test('sets up projects from an empty tenant and keeps credentials write-only thr
     const projectLink = (name: string) => primary.getByRole('link', { name, exact: true });
     await projectLink(REPOSITORY.displayName).click();
     await expect(page).toHaveURL(`${fakeServer.baseUrl}/runs?project=${id}`);
-    await expect(page.getByRole('banner').getByRole('heading', { name: REPOSITORY.displayName })).toBeVisible();
-    await expect(projectLink(REPOSITORY.displayName)).toHaveAttribute('aria-current', 'page');
+    await expect(page.getByRole('banner').getByRole('heading', { name: 'All runs' })).toBeVisible();
+    await expect(page.getByRole('banner').getByText(REPOSITORY.displayName, { exact: true })).toBeVisible();
+    await expect(projectLink(REPOSITORY.displayName)).not.toHaveAttribute('aria-current');
+    await expect(primary.getByRole('link', { name: 'All runs' })).toHaveAttribute('aria-current', 'page');
     await page.getByRole('button', { name: 'Toggle sidebar' }).click();
     await page.getByRole('button', { name: 'Projects', exact: true }).press('Enter');
     await expect(projectLink(REPOSITORY.displayName)).toBeFocused();
@@ -206,7 +208,8 @@ test('sets up projects from an empty tenant and keeps credentials write-only thr
     await expect(page.getByRole('main').getByRole('link', { name: /Renamed project.*demo-app/ })).toBeVisible();
     await page.getByRole('button', { name: 'Back', exact: true }).click();
     await expect(projectLink('Renamed project')).toBeVisible();
-    await expect(page.getByRole('banner').getByRole('heading', { name: 'Renamed project' })).toBeVisible();
+    await expect(page.getByRole('banner').getByRole('heading', { name: 'All runs' })).toBeVisible();
+    await expect(page.getByRole('banner').getByText('Renamed project', { exact: true })).toBeVisible();
     await primary.getByRole('link', { name: 'Runs', exact: true }).click();
     await expect(page).toHaveURL(`${fakeServer.baseUrl}/runs`);
 

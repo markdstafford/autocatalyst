@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { RUN_LIST_FOCUS_ATTR, useActionKeys, type ActionHandlers } from './use-action-keys.js';
 
 function Harness(props: { handlers: ActionHandlers; withDialog?: boolean }): ReactNode {
-  useActionKeys(props.handlers);
+  useActionKeys(props.handlers, { getState: () => ({ canSelectNext: true }) });
   return (
     <div>
       <div {...{ [RUN_LIST_FOCUS_ATTR]: true }} data-testid="list">

@@ -10,9 +10,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { RUN_LIST_PAGE_SIZE, RUN_LIST_POLL_INTERVAL_MS } from './run-list-constants.js';
 import { dedupeRuns, isSelectionAtEnd, moveSelection, reconcileSelection, resolveInitialSelection, type SelectionDirection } from './run-list-selection.js';
 import { mergeRunRows, replaceRunInRows } from './run-row-merge.js';
+import { buildRunViewRequest, projectRunViewRows, type RunViewRequest } from './run-view-list.js';
+import type { RunView } from './run-views.js';
 
-type ListRunsOptions = NonNullable<Parameters<ControlPlaneClient['listRuns']>[0]>;
-export type RunListRequestArgs = Omit<ListRunsOptions, 'limit' | 'cursor'>;
 export type RunListPhase = 'no-token' | 'loading' | 'ready' | 'error';
 
 export interface UseRunListOptions {
@@ -20,10 +20,12 @@ export interface UseRunListOptions {
   readonly connected: boolean;
   readonly routeRunId: string | undefined;
   /** Replace for automatic selection, push for user selection. */
-  navigateToRun(runId: string, options: { readonly replace: boolean }): void;
+  navigateToRun(runId: string | undefined, options: { readonly replace: boolean }): void;
   onListLostChange(lost: boolean): void;
   readonly pollIntervalMs?: number;
-  readonly requestArgs?: RunListRequestArgs;
+  readonly activeView: RunView;
+  readonly projectId?: string | undefined;
+  onUnauthorized?(): void;
   /** Server row from a create response, supplied only on its destination address. */
   readonly createdRun?: Run;
   now?(): number;
@@ -42,8 +44,10 @@ interface View {
 interface Scope {
   readonly initial: View;
   readonly exactProjectId: string | undefined;
-  readonly listPage: (cursor?: string) => ReturnType<ControlPlaneClient['listRuns']>;
+  readonly listPage?: (cursor?: string) => ReturnType<ControlPlaneClient['listRuns']>;
   view: View;
+  rawRows: readonly Run[];
+  switched: boolean;
   generation: number;
   active: boolean;
   busy: boolean;
@@ -69,24 +73,23 @@ function isUnauthorized(error: unknown): boolean {
 }
 
 export function useRunList(options: UseRunListOptions): RunListState {
-  const { client, connected, requestArgs } = options;
+  const { client, connected, activeView, projectId } = options;
+  const activeViewId = activeView.id;
   const pollIntervalMs = options.pollIntervalMs ?? RUN_LIST_POLL_INTERVAL_MS;
   const latest = useRef(options);
   latest.current = options;
   // A value key avoids a reset when the route recreates equivalent filters.
-  const filter = JSON.stringify({
-    projectId: requestArgs?.projectId,
-    status: requestArgs?.status,
-    waitingOn: requestArgs?.waitingOn,
-    workKind: requestArgs?.workKind
-  });
+  const request = useMemo(() => buildRunViewRequest(activeView, projectId), [activeView, projectId]);
+  const filter = JSON.stringify(request);
   const scope = useMemo<Scope>(() => {
-    const args = JSON.parse(filter) as RunListRequestArgs;
-    const arrival = connected ? latest.current.createdRun : undefined;
+    const args = JSON.parse(filter) as RunViewRequest | null;
+    const arrival = connected && args !== null ? latest.current.createdRun : undefined;
+    const rawRows = arrival === undefined ? [] : [arrival];
+    const rows = projectRunViewRows(latest.current.activeView, rawRows);
     const initial: View = {
-      phase: arrival !== undefined ? 'ready' : connected ? 'loading' : 'no-token',
-      rows: arrival === undefined ? [] : [arrival],
-      selectedRunId: arrival?.id,
+      phase: !connected ? 'no-token' : arrival !== undefined || args === null ? 'ready' : 'loading',
+      rows,
+      selectedRunId: rows[0]?.id,
       nextCursor: undefined,
       nowIso: new Date((latest.current.now ?? Date.now)()).toISOString(),
       isPaging: false,
@@ -95,11 +98,15 @@ export function useRunList(options: UseRunListOptions): RunListState {
     return {
       initial,
       view: initial,
-      exactProjectId: typeof args.projectId === 'string' ? args.projectId : undefined,
-      listPage: (cursor) => client.listRuns({
-        ...args,
-        limit: RUN_LIST_PAGE_SIZE,
-        ...(cursor !== undefined ? { cursor } : {})
+      rawRows,
+      switched: false,
+      exactProjectId: typeof args?.projectId === 'string' ? args.projectId : undefined,
+      ...(args === null ? {} : {
+        listPage: (cursor?: string) => client.listRuns({
+          ...args,
+          limit: RUN_LIST_PAGE_SIZE,
+          ...(cursor !== undefined ? { cursor } : {})
+        })
       }),
       generation: 0,
       active: false,
@@ -124,7 +131,7 @@ export function useRunList(options: UseRunListOptions): RunListState {
   }, [scope]);
 
   const navigateSelection = useCallback((id: string | undefined, replace: boolean): void => {
-    if (id !== undefined && id !== latest.current.routeRunId) {
+    if (id !== latest.current.routeRunId) {
       latest.current.navigateToRun(id, { replace });
     }
   }, []);
@@ -134,29 +141,33 @@ export function useRunList(options: UseRunListOptions): RunListState {
     if (newId !== undefined) {
       if (incoming.some((run) => run.id === newId)) delete scope.awaitingListRunId;
       else {
-        const created = scope.view.rows.find((run) => run.id === newId);
+        const created = scope.rawRows.find((run) => run.id === newId);
         if (created !== undefined) incoming = [created, ...incoming];
       }
     }
-    const rows = mergeRunRows(scope.view.rows, incoming);
+    scope.rawRows = mergeRunRows(scope.rawRows, incoming);
+    const rows = projectRunViewRows(latest.current.activeView, scope.rawRows);
     const ids = rows.map((row) => row.id);
-    const selectedRunId = scope.view.selectedRunId === undefined
-      ? resolveInitialSelection(ids, latest.current.routeRunId)
-      : reconcileSelection(scope.view.rows.map((row) => row.id), ids, scope.view.selectedRunId);
+    const switched = scope.switched;
+    scope.switched = false;
+    const priorSelection = scope.view.selectedRunId;
+    const selectedRunId = switched || priorSelection === undefined
+      ? resolveInitialSelection(ids, latest.current.routeRunId ?? priorSelection)
+      : reconcileSelection(scope.view.rows.map((row) => row.id), ids, priorSelection);
     scope.pageCount = pageCount;
     commit({ rows, nextCursor, selectedRunId, nowIso: new Date((latest.current.now ?? Date.now)()).toISOString() });
-    navigateSelection(selectedRunId, true);
+    if (switched || selectedRunId !== undefined) navigateSelection(selectedRunId, true);
   }, [scope, commit, navigateSelection]);
 
   const read = useCallback(async (kind: 'initial' | 'poll' | 'next'): Promise<void> => {
-    if (!scope.active || scope.suspended || scope.busy || (kind === 'next' && scope.view.nextCursor === undefined)) return;
+    if (scope.listPage === undefined || !scope.active || scope.suspended || scope.busy || (kind === 'next' && scope.view.nextCursor === undefined)) return;
     const generation = scope.generation;
     scope.busy = true;
     if (kind === 'next') commit({ isPaging: true });
     try {
       const pages = kind === 'poll' ? Math.max(scope.pageCount, 1) : 1;
       let cursor = kind === 'next' ? scope.view.nextCursor : undefined;
-      const rows = kind === 'next' ? [...scope.view.rows] : [];
+      const rows = kind === 'next' ? [...scope.rawRows] : [];
       for (let i = 0; i < pages; i++) {
         const page = await scope.listPage(cursor);
         if (generation !== scope.generation) return;
@@ -172,7 +183,11 @@ export function useRunList(options: UseRunListOptions): RunListState {
       commit({ phase: 'ready' });
       setListLost(false);
     } catch (error) {
-      if (generation !== scope.generation || isUnauthorized(error)) return;
+      if (generation !== scope.generation) return;
+      if (isUnauthorized(error)) {
+        latest.current.onUnauthorized?.();
+        return;
+      }
       if (kind === 'initial') commit({ phase: 'error' });
       setListLost(true);
     } finally {
@@ -184,29 +199,57 @@ export function useRunList(options: UseRunListOptions): RunListState {
     }
   }, [scope, commit, commitRows, setListLost]);
 
-  // Invalidate requests during commit, before a late old response can drive the
-  // address or footer after the filter/client changes. Also handles Strict Mode replay.
+  // Reinterpret the retained rows before painting a new active view, even
+  // when its effective request does not require a new data scope.
+  useLayoutEffect(() => {
+    const rows = projectRunViewRows(activeView, scope.rawRows);
+    if (rows !== scope.view.rows) commit({ rows });
+  }, [activeView, scope, commit]);
+
+  // A new view owns all subsequent reads, even when its effective request is
+  // unchanged. Keep the compatible raw rows/cursor but retire old responses.
+  const previousViewId = useRef(activeViewId);
   useLayoutEffect(() => {
     if (!connected) return;
+    scope.switched ||= previousViewId.current !== activeViewId;
+    previousViewId.current = activeViewId;
     scope.active = true;
-    if (latest.current.createdRun === undefined) void read('initial');
+    if (scope.view.isPaging) commit({ isPaging: false });
+    if (scope.listPage === undefined) {
+      if (scope.switched) {
+        scope.switched = false;
+        navigateSelection(undefined, true);
+      }
+    } else if (latest.current.createdRun === undefined) {
+      void read(scope.pageCount > 0 ? 'poll' : 'initial');
+    }
     return () => {
       scope.active = false;
       scope.generation++;
       scope.busy = false;
+    };
+  }, [activeViewId, connected, scope, commit, navigateSelection, read]);
+
+  // A compatible view switch retains the last connection result until refresh.
+  // Leaving the request scope retires its connection indicator.
+  useLayoutEffect(() => {
+    if (!connected) return;
+    return () => {
       scope.listLost = false;
       latest.current.onListLostChange(false);
     };
-  }, [connected, scope, read]);
+  }, [connected, scope]);
 
   const { createdRun } = options;
   useLayoutEffect(() => {
-    if (!scope.active || createdRun === undefined) return;
-    const rows = mergeRunRows(scope.view.rows, [createdRun, ...scope.view.rows.filter((run) => run.id !== createdRun.id)]);
+    if (!scope.active || scope.listPage === undefined || createdRun === undefined) return;
+    scope.rawRows = mergeRunRows(scope.rawRows, [createdRun, ...scope.rawRows.filter((run) => run.id !== createdRun.id)]);
+    const rows = projectRunViewRows(latest.current.activeView, scope.rawRows);
     scope.awaitingListRunId = createdRun.id;
     scope.suspended = false;
     commit({
-      rows, selectedRunId: createdRun.id, phase: 'ready', started: true, isPaging: false,
+      rows, selectedRunId: resolveInitialSelection(rows.map((row) => row.id), createdRun.id),
+      phase: 'ready', started: true, isPaging: false,
       nowIso: new Date((latest.current.now ?? Date.now)()).toISOString()
     });
     void read('poll');
@@ -255,8 +298,11 @@ export function useRunList(options: UseRunListOptions): RunListState {
 
   const replaceRun = useCallback((run: Run): void => {
     if (!scope.active) return;
-    const rows = replaceRunInRows(scope.view.rows, run);
-    if (rows !== scope.view.rows) commit({ rows });
+    const rows = replaceRunInRows(scope.rawRows, run);
+    if (rows !== scope.rawRows) {
+      scope.rawRows = rows;
+      commit({ rows: projectRunViewRows(latest.current.activeView, rows) });
+    }
   }, [scope, commit]);
 
   const prepareCreatedRun = useCallback((): void => {

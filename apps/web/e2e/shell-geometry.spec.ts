@@ -87,9 +87,11 @@ for (const scheme of SCHEMES) {
 
         // Header title row and sidebar title row share top and bottom edges.
         const sidebarTitle = await page.getByTestId('sidebar-title').boundingBox();
-        if (sidebarTitle !== null) {
-          expect(Math.abs(header.y - sidebarTitle.y)).toBeLessThanOrEqual(EDGE);
-          expect(Math.abs(header.height - sidebarTitle.height)).toBeLessThanOrEqual(EDGE);
+        const title = await page.getByTestId('header-title').boundingBox();
+        expect(title).not.toBeNull();
+        if (sidebarTitle !== null && title !== null) {
+          expect(Math.abs(title.y - sidebarTitle.y)).toBeLessThanOrEqual(EDGE);
+          expect(Math.abs(title.height - sidebarTitle.height)).toBeLessThanOrEqual(EDGE);
         }
 
         // Five footer zones are contiguous in order and together span the footer.

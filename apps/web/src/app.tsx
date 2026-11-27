@@ -23,15 +23,19 @@ import { devRouteElements } from './dev/dev-routes.js';
 import { ProjectsPage } from './projects/projects-page.js';
 import { NotFoundPage } from './routes/not-found-page.js';
 import { RunsPage } from './routes/runs-page.js';
+import { useRunViews } from './runs/run-views.js';
 import { ConnectionPage } from './settings/connection-page.js';
 import { ShellLayout } from './shell/shell-layout.js';
 import { ThemeProvider } from './theme/theme-provider.js';
 
 export function AppRoutes(): ReactNode {
+  // Memory-only edits and the unsupported-version write lock survive leaving
+  // the shell for an unshelled route, but not a full page reload.
+  const runViews = useRunViews();
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/runs" replace />} />
-      <Route element={<ShellLayout />}>
+      <Route element={<ShellLayout runViews={runViews} />}>
         <Route path="/runs/:runId?" element={<RunsPage />} />
         <Route path="/settings" element={<Navigate to="/settings/connection" replace />} />
         <Route path="/settings/connection" element={<ConnectionPage />} />

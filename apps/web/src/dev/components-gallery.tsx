@@ -40,6 +40,7 @@ import { Button } from '../ui/button.js';
 import { Chip } from '../ui/chip.js';
 import { DescriptionItem, DescriptionList } from '../ui/description-list.js';
 import { Dialog } from '../ui/dialog.js';
+import { Menu } from '../ui/menu.js';
 import { Popover } from '../ui/popover.js';
 import { EmptyState } from '../ui/empty-state.js';
 import { Field } from '../ui/field.js';
@@ -485,6 +486,13 @@ function renderExample(id: string, platform: ShortcutPlatform, surface: GalleryS
         <Tooltip label="Keyboard shortcuts" keyHint="?">
           <Button variant="secondary">Hover or focus me</Button>
         </Tooltip>
+      );
+    case 'menu':
+      return (
+        <Menu label="Example actions" trigger={<Button variant="secondary">Open menu</Button>} items={[
+          { label: 'Rename', keys: [[{ key: 'v', shift: true }]], onSelect: () => {} },
+          { label: 'Delete', disabledReason: 'The last view cannot be deleted', onSelect: () => {} }
+        ]} />
       );
     case 'popover':
       return <PopoverExample />;
