@@ -44,6 +44,8 @@ export class ClaudeUsage {
 
   constructor(readonly resumed: boolean) {}
 
+  bindRoot(id: string): void { this.#sessionId ??= id; }
+
   observe(raw: unknown): void {
     const msg = usageRecord(raw);
     const type = msg['type'];

@@ -22,7 +22,7 @@ Last updated: 2026-11-27 (reviewed conversation foundations, #195).
 - `packages/codex-agent-adapter/src/codex-app-server.ts` owns thread start/resume and acknowledged-turn filtering. Claude's SDK launcher in `claude-agent-adapter.ts` owns root validation, fresh-option compatibility, and scoped lookup requirements.
 - `packages/claude-agent-adapter/src/claude-non-persistence.live.spec.ts` is the opt-in native fixture for the bundled SDK and subscription CLI. It checks both history namespaces and uses the shipped fresh options as a positive control, without setting a production capability flag.
 - `packages/execution/src/internal/workspace-conversation-custody.ts` and `workspace-pruner.ts` own private-writer markers, the exclusive native history routing lease, and guarded reclamation. `workspace.ts:createWorkspaceLifecycle` shares that pruner across startup/recovery, reset, teardown, and scoped retirement. `publication-git.ts` materializes final review source and a target-to-candidate diff from pinned objects, not from worktree contents.
-- Production retention remains disabled. See [qualification and verification](reviewed-agent-conversations.md) before attempting enablement or release.
+- `apps/control-plane/src/reviewed-live-conversations.ts` owns exclusive leases for ephemeral Claude SDK queries and Codex App Server threads. `reviewed-live-conversations.live.spec.ts` verifies actual provider recall through the production reviewed-dispatch port. Disk-backed retention still requires the separate [supervisor qualification](reviewed-agent-conversations.md).
 
 ## Run operator actions (#153)
 

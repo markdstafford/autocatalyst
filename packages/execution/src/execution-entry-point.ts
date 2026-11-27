@@ -139,7 +139,8 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
 
       const nativeConversation = input.prepareConversation ? await input.prepareConversation(environment) : input.nativeConversation;
       const freshHandoff = (input.prepareConversation && nativeConversation === undefined) ||
-        (nativeConversation?.mode === 'retained' && nativeConversation.resumeId) ? undefined : input.freshHandoff;
+        (nativeConversation?.mode === 'retained' && nativeConversation.resumeId) ||
+        (nativeConversation?.mode === 'in_memory' && nativeConversation.resource) ? undefined : input.freshHandoff;
       const runnerEnvironment = freshHandoff ? {
         ...environment,
         context: { ...environment.context, task: {

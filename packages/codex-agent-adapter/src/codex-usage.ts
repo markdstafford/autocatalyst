@@ -36,11 +36,16 @@ export class CodexUsage {
   #lastTurn: Turn | undefined;
   readonly anomalies = new Set<CodexAccountingAnomaly>();
 
-  constructor(readonly threadId: string, model: BillingKey | null, resumed = false) {
+  constructor(readonly threadId: string, model: BillingKey | null, resumed = false, baseline?: readonly (number | null)[]) {
     this.#model = model;
     this.#resumed = resumed;
-    this.#incomplete = resumed;
-    if (!resumed) this.#baseline = [0, 0, 0, 0];
+    this.#incomplete = resumed && baseline === undefined;
+    if (baseline) this.#baseline = [...baseline];
+    else if (!resumed) this.#baseline = [0, 0, 0, 0];
+  }
+
+  baseline(): readonly (number | null)[] | undefined {
+    return this.#lastTurn?.updated && this.#stopped.size === 0 ? this.#baseline : undefined;
   }
 
   ownTurn(id: string): void {

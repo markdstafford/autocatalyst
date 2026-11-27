@@ -103,7 +103,7 @@ export interface CodexSessionLaunchOptions {
   readonly sandbox: CodexSandboxValue;
   readonly allowedTools?: string[];
   readonly config?: Record<string, unknown>;
-  readonly auth: { readonly mode: CodexAuthMode };
+  readonly auth: { readonly mode: CodexAuthMode; readonly accountFingerprint?: string };
   readonly skills?: readonly CodexSkillMount[];
   readonly structuredResult?: CodexStructuredResultDefinition;
 }
@@ -754,7 +754,12 @@ export function createCodexAgentAdapter(
               tokenUsage = usage;
               for (const code of anomalies ?? []) safeLog('warn', 'codex.adapter.invalid_accounting', { runId, step, code });
             },
-            auth: { mode: authMode },
+            auth: {
+              mode: authMode,
+              ...(runInput.nativeConversation?.mode === 'in_memory' &&
+                'accountFingerprint' in authResult && typeof authResult.accountFingerprint === 'string'
+                ? { accountFingerprint: authResult.accountFingerprint } : {})
+            },
             ...(skillMaterialization.mounts.length > 0 ? { skills: skillMaterialization.mounts } : {}),
             ...(structuredResult !== undefined ? { structuredResult } : {})
           });

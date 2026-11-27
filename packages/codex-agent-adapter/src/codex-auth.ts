@@ -28,6 +28,8 @@ export interface CodexAuthProbeSuccess {
   readonly status: 'authenticated';
   /** A safe, coarse account descriptor such as 'enterprise' — never an identity or token. */
   readonly accountType?: string;
+  /** In-process only, used to confirm a live thread belongs to the current login. */
+  readonly accountFingerprint?: string;
 }
 
 export interface CodexAuthProbeFailure {

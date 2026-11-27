@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
@@ -66,9 +67,9 @@ export class CodexAppServerClient {
   #wake: (() => void) | undefined;
   #id = 0;
   #error: Error | undefined;
-  readonly #timer: ReturnType<typeof setTimeout>;
-  readonly #abort: () => void;
-  readonly #signal: AbortSignal | undefined;
+  #stopWatching: (() => void) | undefined;
+  #closed = false;
+  get closed(): boolean { return this.#closed; }
   constructor(binary: string, env: NodeJS.ProcessEnv, cwd: string | undefined, timeoutMs: number, signal?: AbortSignal,
     supervisor?: NativeConversationProcess) {
     const args = [
@@ -112,10 +113,22 @@ export class CodexAppServerClient {
         }
       } catch { this.#fail(); }
     });
-    this.#timer = setTimeout(() => this.#fail(new ProviderConnectionError('timeout', 'Codex app-server timed out.')), timeoutMs);
-    this.#signal = signal;
-    this.#abort = () => this.#fail(new DOMException('Codex session was cancelled.', 'AbortError'));
-    signal?.addEventListener('abort', this.#abort, { once: true });
+    this.watch(timeoutMs, signal);
+  }
+  watch(timeoutMs: number, signal?: AbortSignal): void {
+    this.unwatch();
+    const timer = setTimeout(() => this.#fail(new ProviderConnectionError('timeout', 'Codex app-server timed out.')), timeoutMs);
+    const abort = () => this.#fail(new DOMException('Codex session was cancelled.', 'AbortError'));
+    this.#stopWatching = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+  }
+  unwatch(): void {
+    this.#stopWatching?.();
+    this.#stopWatching = undefined;
   }
   #fail(error: Error = failure()): void {
     this.#error ??= error;
@@ -150,14 +163,14 @@ export class CodexAppServerClient {
     return this.#notifications.splice(0);
   }
   close(): void {
-    clearTimeout(this.#timer);
-    this.#signal?.removeEventListener('abort', this.#abort);
+    this.#closed = true;
+    this.unwatch();
     if (this.#child.exitCode === null && !this.#child.killed) this.#child.kill();
   }
 }
 
 async function checkAccount(client: CodexAppServerClient, authMode: CodexAuthMode = 'enterprise_sign_in',
-  verifyBinding?: (account: unknown) => Promise<boolean>): Promise<RecordValue> {
+  verifyBinding?: (account: unknown) => Promise<boolean>, identify?: (account: RecordValue) => void): Promise<RecordValue> {
   const response = await client.rpc('account/read', { refreshToken: true });
   const account = record(response['account']);
   if (!account['type']) throw new CodexAuthenticationError('missing_sign_in', 'codex', authMode);
@@ -175,13 +188,27 @@ async function checkAccount(client: CodexAppServerClient, authMode: CodexAuthMod
     if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw failure();
     isolation[`mcp_servers.${name}.enabled`] = false;
   }
+  identify?.(account);
   return isolation;
+}
+
+function codexAccountFingerprint(account: RecordValue): string | undefined {
+  const email = account['email'];
+  if (typeof email !== 'string' || !email) return undefined;
+  return createHash('sha256').update(JSON.stringify([email, account['planType']])).digest('hex');
 }
 
 export function codexAuthProbe(binary: string, authMode: CodexAuthMode = 'enterprise_sign_in'): CodexAuthProbe {
   return async (input) => {
     const client = await openCodexAppServer({ binary, env: input.env, ...(input.cwd !== undefined ? { cwd: input.cwd } : {}), ...(input.signal !== undefined ? { signal: input.signal } : {}) });
-    try { await checkAccount(client, authMode); return { status: 'authenticated', accountType: authMode === 'business_sign_in' ? 'business' : 'enterprise' }; }
+    try {
+      let accountFingerprint: string | undefined;
+      await checkAccount(client, authMode, undefined, account => { accountFingerprint = codexAccountFingerprint(account); });
+      return {
+        status: 'authenticated', accountType: authMode === 'business_sign_in' ? 'business' : 'enterprise',
+        ...(accountFingerprint ? { accountFingerprint } : {})
+      };
+    }
     catch (error) {
       if (error instanceof CodexAuthenticationError) return { status: 'unauthenticated', code: error.authFailureCode };
       throw error;
@@ -195,12 +222,23 @@ export function codexSandboxPolicy(sandbox: 'read-only' | 'workspace-write', roo
     : { type: 'workspaceWrite', writableRoots: [...roots], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true };
 }
 
+class CodexLiveThread {
+  baseline: ReturnType<CodexUsage['baseline']> | undefined;
+  constructor(readonly client: CodexAppServerClient, readonly fingerprint: string, readonly thread: RecordValue) {}
+  close(): void { this.client.close(); }
+}
+
 export function codexSessionLaunch(binary: string): CodexSessionLaunch {
   return async function* (options): AsyncIterable<CodexNativeEvent> {
     if (options.allowedTools !== undefined && !options.allowedTools.includes('shell')) {
       throw new UnsupportedProviderCapabilityError('tool_policy_unsupported', 'Codex requires a tool policy permitting its native shell.');
     }
     const retention = options.conversation?.mode === 'retained' ? options.conversation : undefined;
+    const memory = options.conversation?.mode === 'in_memory' ? options.conversation : undefined;
+    const previous = memory?.resource instanceof CodexLiveThread ? memory.resource : undefined;
+    if (memory && (!await memory.verifyLaunch() || (memory.resource && (!previous || previous.client.closed)))) {
+      throw new NativeResumeRefused('stale', false);
+    }
     const workspaceRoots = options.workspaceRoots ?? [];
     const workspaces = options.cwd ? [...new Set([options.cwd, ...workspaceRoots])] : workspaceRoots;
     const requestedProtection = options.conversation?.protectedHistoryRoots;
@@ -221,14 +259,23 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
         }
       } }
     } : undefined;
-    const client = await openCodexAppServer({ binary, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    const client = previous?.client ?? await openCodexAppServer({ binary, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
       ...(protectedProfile ? { experimentalApi: true } : {}),
       ...(retention?.supervisedProcess ? { supervisedProcess: retention.supervisedProcess } : {}),
       env: { ...options.env, ...retention?.scopeEnvironment }, timeoutMs: options.timeoutMs ?? 600_000,
       ...(options.signal !== undefined ? { signal: options.signal } : {}) });
     let accounting: CodexUsage | undefined;
+    let liveThread: CodexLiveThread | undefined;
+    let submitted = false;
     try {
-      const isolation = await checkAccount(client, options.auth.mode, retention?.verifyAccount);
+      if (previous) client.watch(options.timeoutMs ?? 600_000, options.signal);
+      let accountFingerprint: string | undefined;
+      const isolation = await checkAccount(client, options.auth.mode, retention?.verifyAccount, account => {
+        accountFingerprint = codexAccountFingerprint(account);
+      });
+      if (memory && (!accountFingerprint || options.auth.accountFingerprint !== accountFingerprint)) {
+        throw new NativeResumeRefused('stale', false);
+      }
       for (const skill of options.skills ?? []) {
         const actual = await realpath(skill.hostPath);
         const root = await realpath(runtimeSkillsCatalogRoot);
@@ -247,9 +294,13 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
         }) }
       };
       const resumeId = retention?.resumeId;
-      const response = resumeId ? await client.rpc('thread/resume', {
+      const fingerprint = memory ? createHash('sha256').update(JSON.stringify([
+        request, codexProcessEnvironment(options.env), binary, options.auth.mode, accountFingerprint
+      ])).digest('hex') : '';
+      if (previous && previous.fingerprint !== fingerprint) throw new NativeResumeRefused('stale', false);
+      const response = previous?.thread ?? (resumeId ? await client.rpc('thread/resume', {
         ...request, threadId: resumeId, excludeTurns: true
-      }) : await client.rpc('thread/start', { ...request, allowProviderModelFallback: false, ephemeral: !retention });
+      }) : await client.rpc('thread/start', { ...request, allowProviderModelFallback: false, ephemeral: !retention }));
       const thread = record(response['thread']);
       if (typeof thread['id'] !== 'string' || !thread['id'] || response['modelProvider'] !== 'openai' || response['model'] !== options.model) throw failure();
       const sandbox = record(response['sandbox']);
@@ -268,7 +319,9 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
             sandbox['networkAccess'] !== false || wrongWorkspacePolicy ||
             (resumeId && thread['id'] !== resumeId)) throw failure();
       }
-      accounting = new CodexUsage(thread['id'], { provider: 'openai', model: options.model }, resumeId !== undefined);
+      accounting = new CodexUsage(thread['id'], { provider: 'openai', model: options.model }, Boolean(resumeId || previous), previous?.baseline);
+      if (previous) client.drainNotifications();
+      submitted = true;
       const turnResponse = await client.rpc('turn/start', {
         threadId: thread['id'],
         ...(protectedProfile ? { permissions: permissionId } : { sandboxPolicy: codexSandboxPolicy(options.sandbox, workspaceRoots) }),
@@ -311,21 +364,28 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
             catch { throw new ProviderProtocolError('structured_result_invalid', 'Codex final output is not JSON.'); }
           }
           retention?.completed(thread['id']);
+          if (memory) liveThread = previous ?? new CodexLiveThread(client, fingerprint, response);
           yield { type: 'result', ...(structuredOutput !== undefined ? { structuredOutput } : {}),
             result: { directive: 'advance', output: finalText } };
           return;
         }
       }
     } catch (error) {
+      if (previous && !submitted && client.closed && !(error instanceof Error && error.name === 'AbortError')) {
+        throw new NativeResumeRefused('stale', false);
+      }
       if (error instanceof NativeResumeRefused || error instanceof CodexAuthenticationError || error instanceof ProviderProtocolError ||
           error instanceof ProviderConnectionError || (error instanceof Error && error.name === 'AbortError')) throw error;
       throw failure();
     } finally {
-      client.close();
+      if (!liveThread) client.close();
+      else client.unwatch();
       if (accounting !== undefined) {
         for (const packet of client.drainNotifications()) accounting.observe(packet['method'], packet['params']);
+        if (liveThread) liveThread.baseline = accounting.baseline();
         options.onUsage?.(accounting.evidence(), [...accounting.anomalies]);
       }
+      if (liveThread) memory?.ready(liveThread);
     }
   };
 }

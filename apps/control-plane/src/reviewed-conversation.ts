@@ -7,12 +7,15 @@ import { promisify } from 'node:util';
 import {
   claudeAgentAdapterId, claudeProviderKind, claudeSubscriptionAdapterId, readClaudeLaunchBuild
 } from '@autocatalyst/claude-agent-adapter';
+import { codexAgentAdapterId, codexBusinessAdapterId, codexProviderKind } from '@autocatalyst/codex-agent-adapter';
 import { implementerDispositionsResultSchema } from '@autocatalyst/api-contract';
 import type { ReviewedAttemptPort, RunRoleWorkInput } from '@autocatalyst/core';
 import type { MaterializedExecutionEnvironment, NativeConversationTurn, ResolvedAgentRunnerProfile } from '@autocatalyst/execution';
 import type {
   ConversationBinding, ConversationClaim, DrizzleAgentConversationRepository, ReviewedDispatchAttempt
 } from '@autocatalyst/persistence';
+
+import type { ReviewedLiveConversations } from './reviewed-live-conversations.js';
 
 const exec = promisify(execFile);
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value, (_key, entry: unknown) => {
@@ -53,6 +56,15 @@ export function createFreshConversationResolver(
       : undefined;
     return { mode: 'fresh_only', verifiedNonPersistence: build !== undefined && verifiedBuilds.has(build) };
   };
+}
+
+export function admitsReviewedLiveConversation(
+  profile: ResolvedAgentRunnerProfile, fresh: Awaited<ReturnType<PrepareFreshConversation>>
+): boolean {
+  return (profile.providerKind === codexProviderKind &&
+    (profile.adapterId === codexBusinessAdapterId || profile.adapterId === codexAgentAdapterId)) ||
+    (profile.providerKind === claudeProviderKind &&
+      profile.adapterId === claudeSubscriptionAdapterId && fresh.verifiedNonPersistence);
 }
 
 export function allowsRetention(build: RetentionBuild, entries = releaseRetentionBuilds): boolean {
@@ -148,6 +160,8 @@ export function createReviewedAttemptPort(input: {
   readonly admit?: (environment: MaterializedExecutionEnvironment, generation: string, profile: ResolvedAgentRunnerProfile) => Promise<VerifiedLaunch | undefined>;
   readonly reconcileWorkspace?: (environment: MaterializedExecutionEnvironment, generation: string) => Promise<void>;
   readonly prepareFreshConversation?: PrepareFreshConversation;
+  readonly live?: ReviewedLiveConversations;
+  readonly admitsLive?: (profile: ResolvedAgentRunnerProfile, fresh: Awaited<ReturnType<PrepareFreshConversation>>) => boolean;
   readonly benchmarkArm?: 'A' | 'B';
   readonly qualifiedBuild?: (build: RetentionBuild) => boolean;
 }): ReviewedAttemptPort | undefined {
@@ -161,8 +175,17 @@ export function createReviewedAttemptPort(input: {
   let active: { attempt: ReviewedDispatchAttempt; claim: ConversationClaim; handle?: string; storageScope?: string;
     opened?: Awaited<ReturnType<VerifiedLaunch['open']>>; launch: VerifiedLaunch } | undefined;
 
+  let live: { attemptId: string; finish(accepted: boolean): void } | undefined;
+
   async function assertOwner() {
     if (occurrence?.stillOwns && !await occurrence.stillOwns()) throw new Error('reviewed_dispatch_not_owned');
+  }
+
+  function hasRequiredDispositions(checkpoint: unknown): boolean {
+    const required = roleInput.reviewContext?.requiredDispositions?.map(item => item.feedbackId) ?? [];
+    const result = required.length ? implementerDispositionsResultSchema.safeParse(checkpoint) : undefined;
+    const dispositions = result?.success ? result.data.dispositions ?? [] : [];
+    return required.every(id => dispositions.filter(item => item.feedbackId === id).length === 1);
   }
 
   return {
@@ -181,6 +204,8 @@ export function createReviewedAttemptPort(input: {
         id: attemptId, tenant: roleInput.tenant, runId: roleInput.runId, step, role: roleInput.role,
         occurrenceId: occurrence.id, round: roleInput.round
       };
+      const liveScope = hash([attempt.tenant, attempt.runId, step, attempt.role]);
+      let openLive: (() => ReturnType<ReviewedLiveConversations['open']>) | undefined;
       const ws = environment.workspace;
       let binding: ConversationBinding | undefined;
       let launch: VerifiedLaunch | undefined;
@@ -209,6 +234,18 @@ export function createReviewedAttemptPort(input: {
         const repairBound = !roleInput.ciRepair || (pr && input.repositoryIdentity &&
           pr.repository === input.repositoryIdentity && pr.branch === ws.branchName && pr.id && Number.isInteger(pr.number) && pr.number > 0);
         if (profile && generation && scopeDigest && repairBound) {
+          if (!fallback && proof && input.live && input.admitsLive?.(profile, fresh)) {
+            const compatibility = hash({
+              generation, scopeDigest, pr, profile, proof,
+              toolPolicy: environment.toolPolicy, capabilities: environment.capabilities, skills: environment.skills,
+              protectedHistoryRoots: fresh.protectedHistoryRoots
+            });
+            openLive = () => input.live?.open(liveScope, compatibility, async () => {
+              await assertOwner();
+              return Boolean(input.workspacesRoot &&
+                await reviewedWorkspaceProof(environment, input.workspacesRoot, input.hostRepository) === proof);
+            });
+          }
           const candidate = await input.admit?.(environment, generation, profile).catch(() => undefined);
           const provider = profile.providerKind === 'anthropic' ? 'claude' : profile.providerKind;
           if (candidate && candidate.build.provider === provider && candidate.authenticatedBinding.trim() &&
@@ -234,12 +271,19 @@ export function createReviewedAttemptPort(input: {
       }
       catch (error) {
         if (error instanceof Error && error.message === 'reviewed_dispatch_not_owned') throw error;
+        input.live?.discard(liveScope);
         return nativeProvider ? fresh : undefined;
       }
+      if (!openLive || (claim && launch)) input.live?.discard(liveScope);
       if (!claim || !launch) {
         if (workspaceGeneration) {
           await assertOwner();
           await input.reconcileWorkspace?.(environment, workspaceGeneration).catch(() => undefined);
+        }
+        const opened = openLive?.();
+        if (opened) {
+          live = { attemptId, finish: opened.finish };
+          return { ...opened.turn, ...(fresh.protectedHistoryRoots ? { protectedHistoryRoots: fresh.protectedHistoryRoots } : {}) };
         }
         return nativeProvider ? fresh : undefined;
       }
@@ -285,15 +329,20 @@ export function createReviewedAttemptPort(input: {
         if (beforeLaunch) input.repository.markFreshAfterPreflight(prepared);
         prepared = undefined;
       }
+      if (live?.attemptId === attemptId) {
+        const pending = live;
+        live = undefined;
+        try {
+          pending.finish(accepted && (!occurrence.stillOwns || await occurrence.stillOwns()) && hasRequiredDispositions(checkpoint));
+        }
+        finally { pending.finish(false); }
+      }
       if (active?.attempt.id !== attemptId) return;
       const { attempt, claim, handle, storageScope, opened, launch } = active;
       active = undefined;
       const writerReleased = !opened?.finish || await opened.finish().catch(() => false);
       const owned = !occurrence.stillOwns || await occurrence.stillOwns();
-      const required = roleInput.reviewContext?.requiredDispositions?.map(item => item.feedbackId) ?? [];
-      const result = required.length ? implementerDispositionsResultSchema.safeParse(checkpoint) : undefined;
-      const dispositions = result?.success ? result.data.dispositions ?? [] : [];
-      const validDispositions = required.every(id => dispositions.filter(item => item.feedbackId === id).length === 1);
+      const validDispositions = hasRequiredDispositions(checkpoint);
       input.repository.finish(attempt, claim, accepted && owned && writerReleased && validDispositions && handle && storageScope
         ? { handle, storageScope } : undefined);
       if (owned) await launch.reconcile?.().catch(() => undefined);

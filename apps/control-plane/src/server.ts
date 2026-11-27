@@ -2,8 +2,9 @@ import { createPrActivityReader } from '@autocatalyst/core';
 import { DrizzleAgentConversationRepository, DrizzleRepairRepository } from '@autocatalyst/persistence';
 import { createPublicationGit, materializePublicationReviewSnapshot } from './publication-git.js';
 import {
-  createFreshConversationResolver, createReviewedAttemptPort, type PrepareFreshConversation
+  admitsReviewedLiveConversation, createFreshConversationResolver, createReviewedAttemptPort, type PrepareFreshConversation
 } from './reviewed-conversation.js';
+import { ReviewedLiveConversations } from './reviewed-live-conversations.js';
 import { createNativeHistoryLaunch, readNativeHistoryHost } from './native-history-launch.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -1089,6 +1090,7 @@ export async function createControlPlaneServer(
   const buildDispatch = realDispatchEnabled || fakeDispatchEnabled;
 
   const baseAdapters = options.providerAdapters ?? emptyProviderAdapterMap;
+  const reviewedLiveConversations = new ReviewedLiveConversations();
   const nativeHistory = createNativeHistoryLaunch(readNativeHistoryHost(process.env));
   const { provisionWorkspace } = nativeHistory.lifecycle;
   let mergedAdapters: ProviderAdapterMap = baseAdapters;
@@ -1841,7 +1843,10 @@ export async function createControlPlaneServer(
           const project = workspace?.project;
           const workspaceRoot = project?.workspaceRootOverride ?? workspace?.roots?.workspacesRoot;
           const port = createReviewedAttemptPort({
-            repository: agentConversations, roleInput, prepareFreshConversation, freshHandoff: renderReviewedHandoff({ evidence, requiredFindingIds, requiredDispositions }),
+            repository: agentConversations, roleInput, prepareFreshConversation,
+            live: reviewedLiveConversations,
+            admitsLive: (profile, fresh) => isBuiltIn(profile) && admitsReviewedLiveConversation(profile, fresh),
+            freshHandoff: renderReviewedHandoff({ evidence, requiredFindingIds, requiredDispositions }),
             ...(workspaceRoot ? { workspacesRoot: workspaceRoot } : {}),
             ...(workspaceRoot && project && workspace?.roots ? {
               admit: (environment, generation, profile) => isBuiltIn(profile) ? nativeHistory.admit({
@@ -2319,6 +2324,7 @@ export async function createControlPlaneServer(
   }
 
   app.addHook('onClose', async () => {
+    reviewedLiveConversations.close();
     database.close();
   });
 

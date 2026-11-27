@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
@@ -16,9 +17,22 @@ export function claudeSubscriptionEnvironment(overlay: Readonly<Record<string, s
 
 /** Ask the vendor CLI for safe status; never open or copy its cached credential. */
 export async function probeClaudeSubscription(env: Record<string, string>): Promise<boolean> {
+  return (await readClaudeSubscription(env)) !== undefined;
+}
+
+export async function claudeSubscriptionIdentity(env: Record<string, string>): Promise<string | undefined> {
+  const status = await readClaudeSubscription(env);
+  const email = status?.['email'];
+  const org = status?.['orgId'];
+  if (typeof email !== 'string' || !email || typeof org !== 'string' || !org) return undefined;
+  return createHash('sha256').update(JSON.stringify([email, org])).digest('hex');
+}
+
+async function readClaudeSubscription(env: Record<string, string>): Promise<Record<string, unknown> | undefined> {
   try {
     const result = await promisify(execFile)('claude', ['auth', 'status'], { env, timeout: 20_000, maxBuffer: 32_768 });
     const status = JSON.parse(result.stdout) as Record<string, unknown>;
-    return status['loggedIn'] === true && status['authMethod'] === 'claude.ai' && status['apiProvider'] === 'firstParty';
-  } catch { return false; }
+    if (status['loggedIn'] === true && status['authMethod'] === 'claude.ai' && status['apiProvider'] === 'firstParty') return status;
+  } catch { /* The vendor CLI could not attest the account. */ }
+  return undefined;
 }

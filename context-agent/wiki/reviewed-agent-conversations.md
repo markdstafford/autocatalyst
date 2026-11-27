@@ -8,7 +8,7 @@
 - Production reviewed dispatch and `pr.finalize` share the fresh-session resolver. For either built-in Claude auth path, match the SDK version, CLI version, OS, architecture and auth path against the independent release list before setting `persistSession: false`.
 - `pr.finalize` never takes a slot or a handoff. Read the integrated commit copy and pinned diff under an attempt-specific scratch directory. Symlinks and gitlinks are described rather than followed. A result from a previous occurrence does not establish an attestation or a valid freeze.
 
-## Qualification status — not ready to merge
+## Disk-backed retention qualification
 
 | Runtime/configuration | Evidence | Release status |
 | --- | --- | --- |
@@ -53,7 +53,9 @@ The fixture exercises the production lease composition and real adapters, recrea
 
 A disposable launchd job stopped an ordinary synthetic child when the parent exited. A child that started its own session survived the parent and wrote a marker before exiting. The native sandbox could deny all forks, but the tested process-information restrictions still allowed the child to start a new session. A launchd job or a POSIX process group alone cannot satisfy the current descendant-exit requirement while preserving provider tool execution.
 
-A separate live test used the same signed-in provider builds and a unique synthetic marker. Codex kept an ephemeral App Server thread alive for two turns. Claude kept a streaming SDK query alive with `persistSession: false` and sent two turns. Both returned the exact first-turn marker on the second turn, and the tests found no newly saved transcript. This supports an in-memory continuity design that starts fresh after a server restart. It is not integrated in Autocatalyst and does not verify durable reuse through the current launcher.
+A separate live test used the same signed-in provider builds and a unique synthetic marker. Codex kept an ephemeral App Server thread alive for two turns. Claude kept a streaming SDK query alive with `persistSession: false` and sent two turns. Both returned the exact first-turn marker on the second turn, and the tests found no newly saved transcript. This supports an in-memory continuity design that starts fresh after a server restart. PR #206 uses this mode by default for the verified Claude subscription build and pinned Codex sign-in adapters on reviewed work. It keeps one accepted conversation per tenant, run, step, and role, with worktree, route, account, tool and CI repair PR compatibility checks. The service evicts inactive conversations after one hour, holds up to 16 resources, and closes them on shutdown. Missing or incompatible context receives the ordinary fresh handoff, as does the first turn after restart. PR final review uses a fresh connection. The native on-disk release list remains empty.
+
+The opt-in `reviewed-live-conversations.live.spec.ts` fixture uses the production reviewed port, real worktree and SQLite, and the actual provider transports. It uses `AUTOCATALYST_LIVE_MEMORY_PROVIDER` (`claude` or `codex`), `AUTOCATALYST_LIVE_MEMORY_MODEL`, and an independently signed-in `CLAUDE_CONFIG_DIR` or `CODEX_HOME`.
 
 ## Run the isolated Claude native fixture
 

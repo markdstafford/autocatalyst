@@ -402,14 +402,14 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
             await recordPreTerminalFailedSession(preTerminalMeta, attemptId);
           }
           await finish(false, undefined, refusal?.launched === false);
-          if (refusal && nativeMode === 'retained' && !fallback &&
+          if (refusal && (nativeMode === 'retained' || nativeMode === 'in_memory') && !fallback &&
               !(await options.isRunCanceled?.(input.runId))) {
             fallback = true;
             retriesUsed += 1;
             continue;
           }
 
-          if (nativeMode !== 'retained' && !fallback && isRetryableSessionFailure(error)) {
+          if (nativeMode !== 'retained' && nativeMode !== 'in_memory' && !fallback && isRetryableSessionFailure(error)) {
             if (retriesUsed >= maxSessionRetries) {
               // Budget exhausted: fail through the normal run-failure flow with a safe reason so
               // POST /v1/runs/:id/recover remains available.

@@ -8,6 +8,12 @@ export type NativeConversationTurn = {
 } & (
   | { readonly mode: 'fresh_only'; readonly verifiedNonPersistence: boolean }
   | {
+      readonly mode: 'in_memory';
+      readonly resource?: NativeConversationResource;
+      verifyLaunch(): Promise<boolean>;
+      ready(resource: NativeConversationResource): void;
+    }
+  | {
       readonly mode: 'retained';
       readonly resumeId?: string;
       /** Validate custody and the effective launch immediately before native persistence is enabled. */
@@ -18,6 +24,11 @@ export type NativeConversationTurn = {
       readonly supervisedProcess?: NativeConversationProcess;
       completed(handle: string): void;
     });
+
+/** An adapter owns this live resource. It is never written to storage. */
+export interface NativeConversationResource {
+  close(): void;
+}
 
 /** The host issues this spawn capability for one reserved, fenced writer. */
 export interface NativeConversationProcess {

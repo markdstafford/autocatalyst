@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { PassThrough } from 'node:stream';
+
 import { NativeResumeRefused, protectedHistoryRoots } from '@autocatalyst/execution';
 import type { NativeConversationProcess } from '@autocatalyst/execution';
 import { ClaudeUsage, type ClaudeAccountingAnomaly } from './claude-usage.js';
@@ -35,7 +38,7 @@ import {
   type ProxyUpstreamFailureRecord
 } from '@autocatalyst/execution';
 
-import { claudeSubscriptionEnvironment, probeClaudeSubscription } from './subscription-auth.js';
+import { claudeSubscriptionEnvironment, claudeSubscriptionIdentity, probeClaudeSubscription } from './subscription-auth.js';
 
 import { materializeClaudeSkillPlugins } from './skill-materialization.js';
 
@@ -86,6 +89,9 @@ export interface ClaudeNativeEvent {
 }
 
 export interface ClaudeSessionLaunchOptions {
+  readonly ownSkills?: () => () => void;
+  readonly timeoutMs?: number;
+  readonly signal?: AbortSignal;
   readonly conversation?: import('@autocatalyst/execution').NativeConversationTurn;
   readonly onUsage?: (usage: AgentTokenUsage, anomalies?: readonly ClaudeAccountingAnomaly[]) => void;
   readonly prompt: string;
@@ -268,6 +274,49 @@ function isNonRetryableStructuredError(err: unknown): boolean {
     || err instanceof ClassifiedProviderFailureError;
 }
 
+class ClaudeLiveQuery {
+  readonly input = new PassThrough({ objectMode: true });
+  readonly #controller = new AbortController();
+  readonly #messages;
+  root?: string;
+  closed = false;
+
+  constructor(readonly fingerprint: string, query: typeof import('@anthropic-ai/claude-agent-sdk').query,
+    options: Record<string, unknown>, readonly cleanupSkills?: () => void) {
+    const source = this.input as AsyncIterable<import('@anthropic-ai/claude-agent-sdk').SDKUserMessage>;
+    this.#messages = query({ prompt: source, options: { ...options, abortController: this.#controller } });
+  }
+
+  async *turn(prompt: string, timeoutMs: number, signal?: AbortSignal): AsyncIterable<Record<string, unknown>> {
+    const stop = () => this.close();
+    if (signal?.aborted) throw new DOMException('Claude session was cancelled.', 'AbortError');
+    signal?.addEventListener('abort', stop, { once: true });
+    const timer = setTimeout(stop, timeoutMs);
+    this.input.write({ type: 'user', message: { role: 'user', content: prompt }, parent_tool_use_id: null, session_id: this.root ?? '' });
+    try {
+      for (;;) {
+        const next = await this.#messages.next();
+        if (next.done) throw new ProviderConnectionError('process_launch_failed', 'Claude ended before completing the active turn.');
+        const message = next.value as unknown as Record<string, unknown>;
+        yield message;
+        if (message['type'] === 'result') return;
+      }
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.#controller.abort();
+    this.input.destroy();
+    try { this.#messages.close(); }
+    finally { this.cleanupSkills?.(); }
+  }
+}
+
 // Real SDK launch: dynamically imports @anthropic-ai/claude-agent-sdk and
 // translates its SDKMessage stream into the ClaudeNativeEvent shape used by
 // mapNativeEvent. Dynamic import keeps the package buildable and unit-testable
@@ -277,8 +326,10 @@ async function* realSDKLaunch(
   queryOverride?: ClaudeSdkQuery
 ): AsyncIterable<ClaudeNativeEvent> {
   let query: ClaudeSdkQuery;
+  let sdk: typeof import('@anthropic-ai/claude-agent-sdk') | undefined;
   try {
-    query = queryOverride ?? (await import('@anthropic-ai/claude-agent-sdk') as { query: ClaudeSdkQuery }).query;
+    if (!queryOverride) sdk = await import('@anthropic-ai/claude-agent-sdk');
+    query = queryOverride ?? (sdk!.query as ClaudeSdkQuery);
   } catch {
     throw new ProviderConnectionError(
       'process_launch_failed',
@@ -287,6 +338,11 @@ async function* realSDKLaunch(
   }
 
   const retention = opts.conversation?.mode === 'retained' ? opts.conversation : undefined;
+  const memory = opts.conversation?.mode === 'in_memory' ? opts.conversation : undefined;
+  const previous = memory?.resource instanceof ClaudeLiveQuery ? memory.resource : undefined;
+  if (memory && (!sdk || !await memory.verifyLaunch() || (memory.resource && (!previous || previous.closed)))) {
+    throw new NativeResumeRefused('stale', false);
+  }
   const requestedProtection = opts.conversation?.protectedHistoryRoots;
   const historyRoots = protectedHistoryRoots(requestedProtection,
     [...(opts.workspaceRoots ?? []), ...(opts.cwd ? [opts.cwd] : [])]);
@@ -355,24 +411,47 @@ async function* realSDKLaunch(
           return child;
         };
       }
-    } else if (opts.conversation.mode === 'fresh_only' && opts.conversation.verifiedNonPersistence) {
+    } else if (memory || (opts.conversation.mode === 'fresh_only' && opts.conversation.verifiedNonPersistence)) {
       sdkOpts['persistSession'] = false;
     }
   }
-  let root: string | undefined;
+  let live: ClaudeLiveQuery | undefined;
+  let keep = false;
+  let releaseSkills: (() => void) | undefined;
+  let root = previous?.root;
   const retainedEvents = new Set<string>();
   const linkedTools = new Set<string>();
   const accounting = new ClaudeUsage(retention?.resumeId !== undefined);
+  if (root) accounting.bindRoot(root);
   const invalidRetainedRoot = () => new ProviderProtocolError('invalid_provider_event', 'Claude root conversation did not match the current query.');
   try {
-    for await (const msg of query({ prompt: opts.prompt, options: sdkOpts })) {
-      if (retention && msg['type'] === 'system' && msg['subtype'] === 'init') {
+    if (memory && sdk) {
+      const account = await claudeSubscriptionIdentity(opts.env ?? {});
+      if (!account) throw new NativeResumeRefused('unsupported', false);
+      // The control plane has already bound the resolved catalog skills.
+      // Materialized plugin paths are temporary and differ between dispatches.
+      const stableEnvironment = Object.fromEntries(Object.entries(opts.env ?? {}).filter(([key]) =>
+        key !== 'CLAUDE_AGENT_SDK_VERSION' && key !== 'NoDefaultCurrentDirectoryInExePath'
+      ).sort(([a], [b]) => a.localeCompare(b)));
+      const fingerprint = createHash('sha256').update(JSON.stringify([
+        { ...sdkOpts, plugins: undefined, env: stableEnvironment }, account
+      ])).digest('hex');
+      if (previous && previous.fingerprint !== fingerprint) throw new NativeResumeRefused('stale', false);
+      if (previous) live = previous;
+      else {
+        live = new ClaudeLiveQuery(fingerprint, sdk.query, sdkOpts, () => releaseSkills?.());
+        releaseSkills = opts.ownSkills?.();
+      }
+    }
+    const messages = live ? live.turn(opts.prompt, opts.timeoutMs ?? 600_000, opts.signal) : query({ prompt: opts.prompt, options: sdkOpts });
+    for await (const msg of messages) {
+      if ((retention || memory) && msg['type'] === 'system' && msg['subtype'] === 'init') {
         const id = msg['session_id'];
         if (typeof id !== 'string' || !id || (root !== undefined && id !== root) ||
-            (retention.resumeId !== undefined && id !== retention.resumeId)) throw invalidRetainedRoot();
+            (retention?.resumeId !== undefined && id !== retention.resumeId)) throw invalidRetainedRoot();
         root = id;
       }
-      if (retention && (msg['type'] === 'assistant' || msg['type'] === 'result')) {
+      if ((retention || memory) && (msg['type'] === 'assistant' || msg['type'] === 'result')) {
         if (msg['isReplay'] === true || msg['is_replay'] === true) {
           accounting.observe(msg);
           continue;
@@ -388,7 +467,7 @@ async function* realSDKLaunch(
         const content = inner?.['content'];
         if (Array.isArray(content)) {
           for (const [index, block] of (content as Record<string, unknown>[]).entries()) {
-            if (retention) {
+            if (retention || memory) {
               const messageId = inner?.['id'];
               if (typeof messageId !== 'string' || !messageId) continue;
               const event = JSON.stringify([messageId, block['type'], block['id'] ?? index]);
@@ -407,7 +486,10 @@ async function* realSDKLaunch(
         const subtype = msg['subtype'] as string | undefined;
         const usage = msg['usage'] as Record<string, unknown> | undefined;
         if (subtype === 'success') {
-          if (root && msg['is_error'] !== true) retention?.completed(root);
+          if (root && msg['is_error'] !== true) {
+            retention?.completed(root);
+            if (live) { live.root = root; keep = true; }
+          }
           const input_tokens =
             typeof usage?.['input_tokens'] === 'number' ? (usage['input_tokens'] as number) : undefined;
           const output_tokens =
@@ -439,6 +521,10 @@ async function* realSDKLaunch(
     // Other messages are not used for UI events.
     }
   } finally {
+    if (live) {
+      if (keep && memory) memory.ready(live);
+      else live.close();
+    }
     opts.onUsage?.(accounting.evidence(), [...accounting.anomalies]);
   }
 }
@@ -634,6 +720,11 @@ export function createClaudeAgentAdapter(
       });
       metadata.catch(() => undefined);
 
+      let skillsOwnedByQuery = false;
+      const cleanupSkills = () => {
+        if (!skillsOwnedByQuery) skillMaterialization.cleanup();
+      };
+      const cancellation = new AbortController();
       let tokenUsage: AgentTokenUsage = { available: false };
       async function* mapEvents(): AsyncIterable<RunnerEvent> {
         let outcome: 'succeeded' | 'failed' | 'canceled' = 'succeeded';
@@ -740,6 +831,13 @@ export function createClaudeAgentAdapter(
               for (const code of anomalies ?? []) safeLog('warn', 'claude.adapter.invalid_accounting', { runId, step, code });
             },
             prompt,
+            ...(runInput.nativeConversation?.mode === 'in_memory' ? {
+              signal: cancellation.signal, timeoutMs: profile.endpoint.requestTimeoutMs ?? 600_000,
+              ownSkills() {
+                skillsOwnedByQuery = true;
+                return skillMaterialization.cleanup;
+              }
+            } : {}),
             ...(cwd !== undefined ? { cwd } : {}),
             env: launchEnv,
             workspaceRoots: env.workspace.workspaceRoots,
@@ -825,7 +923,7 @@ export function createClaudeAgentAdapter(
           }
         } catch (err) {
           outcome = 'failed';
-          skillMaterialization.cleanup();
+          cleanupSkills();
           let classified = classifySdkError(err);
 
           // Read the proxy's safe unrecovered failure evidence (if any) for this session. Used both
@@ -876,7 +974,7 @@ export function createClaudeAgentAdapter(
           metadataReject(thrown);
           throw thrown;
         } finally {
-          skillMaterialization.cleanup();
+          cleanupSkills();
           if (outcome !== 'failed') {
             metadataResolve({
               outcome,
@@ -900,7 +998,10 @@ export function createClaudeAgentAdapter(
         events: mapEvents(),
         metadata,
         getTokenUsage: () => tokenUsage,
-        async close() { skillMaterialization.cleanup(); }
+        async close() {
+          cancellation.abort();
+          cleanupSkills();
+        }
       };
       return session;
     }
