@@ -4,6 +4,7 @@ import { createPublicationGit, materializePublicationReviewSnapshot } from './pu
 import {
   createFreshConversationResolver, createReviewedAttemptPort, type PrepareFreshConversation
 } from './reviewed-conversation.js';
+import { createNativeHistoryLaunch, readNativeHistoryHost } from './native-history-launch.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, writeFile, mkdtemp } from 'node:fs/promises';
@@ -106,7 +107,6 @@ import {
   createDirectCallFactory,
   createExecutionEntryPoint,
   createExecutionMaterializer,
-  provisionWorkspace,
   createSpecAuthorResultContract,
   createReviewedSpecAuthorResultContract,
   createSpecReviewerResultContract,
@@ -763,6 +763,7 @@ export function createDelegatingExecutionEntryPoint(input: {
   readonly registry?: StepResultContractRegistry;
   readonly resolvePinnedRoute?: (context: ExecutionContext) => ModelRoutingResolution | undefined;
   readonly resolvePublicationReview?: (context: ExecutionContext) => PublicationReviewSnapshot | undefined;
+  readonly prepareDefaultConversation?: NonNullable<ExecutionEntryPointInput['prepareConversation']>;
 }): ExecutionEntryPoint {
   const { resolveRole } = input;
   /**
@@ -813,13 +814,14 @@ export function createDelegatingExecutionEntryPoint(input: {
         ? taskInputRole
         : resolveRole !== undefined ? resolveRole(entryInput.context.run.currentStep) : undefined;
       const pinnedRoute = input.resolvePinnedRoute?.(entryInput.context);
+      const prepare = entryInput.prepareConversation ?? (entryInput.nativeConversation ? undefined : input.prepareDefaultConversation);
       let resolvedProfile: AgentProfileResolution['profile'] | undefined;
       const runnerFactoryInput: AgentRunnerFactoryInput = {
         runId: entryInput.context.run.id,
         step: entryInput.context.run.currentStep,
         tenant: entryInput.context.run.tenant,
         ...(pinnedRoute ? { pinnedProfile: pinnedRoute } : {}),
-        ...(entryInput.prepareConversation ? { onResolvedProfile: profile => { resolvedProfile = profile; } } : {}),
+        ...(prepare ? { onResolvedProfile: profile => { resolvedProfile = profile; } } : {}),
         ...(resolvedRole !== undefined ? { role: resolvedRole } : {})
       };
       const runner = await input.factory.createRunner(runnerFactoryInput);
@@ -886,7 +888,6 @@ export function createDelegatingExecutionEntryPoint(input: {
           return { ...config, resultFile: config.resultFile.replace(/\.json$/u, `-transport-${entryInput.transportRetry}.json`) };
         }
       });
-      const prepare = entryInput.prepareConversation;
       yield* perRunEntryPoint.execute(prepare ? {
         ...entryInput, prepareConversation: environment => prepare(environment, resolvedProfile)
       } : entryInput);
@@ -1088,6 +1089,8 @@ export async function createControlPlaneServer(
   const buildDispatch = realDispatchEnabled || fakeDispatchEnabled;
 
   const baseAdapters = options.providerAdapters ?? emptyProviderAdapterMap;
+  const nativeHistory = createNativeHistoryLaunch(readNativeHistoryHost(process.env));
+  const { provisionWorkspace } = nativeHistory.lifecycle;
   let mergedAdapters: ProviderAdapterMap = baseAdapters;
   // Extension-registry entries mirroring the adapters that real dispatch registers.
   // Startup composition validates persisted provider profiles against the registry
@@ -1510,8 +1513,17 @@ export async function createControlPlaneServer(
       createConnection: (input) => createConnectionFromAgentConnection(input, secretStore)
     });
     const materializer = createExecutionMaterializer({
+      provisionWorkspace,
       capabilities: { shellAvailable: false, lspAvailable: false }
     });
+    const isBuiltIn = (profile: AgentProfileResolution['profile'] | undefined) =>
+      realDispatchEnabled && !fakeDispatchEnabled && profile !== undefined &&
+      !baseAdapters.has(buildProviderAdapterKey(profile.providerKind, profile.adapterId));
+    const resolveFresh = createFreshConversationResolver();
+    const protectedFresh = nativeHistory.protectFresh(resolveFresh);
+    const prepareFreshConversation: PrepareFreshConversation = (environment, profile) =>
+      protectedFresh(environment, isBuiltIn(profile) ? profile : undefined);
+    const protectDefault = nativeHistory.protectFresh(async () => ({ mode: 'fresh_only', verifiedNonPersistence: false }));
     const stepResultContractRegistry = createControlPlaneStepResultContractRegistry({
       ...(options.specAuthorIdentity !== undefined ? { specAuthorIdentity: options.specAuthorIdentity } : {})
     });
@@ -1522,6 +1534,11 @@ export async function createControlPlaneServer(
       resolvePinnedRoute: context => pinnedReviewedRoutes.get(context),
       resolvePublicationReview: context => publicationReviews.get(context),
       factory: runnerFactory,
+      prepareDefaultConversation: async (environment, profile) => {
+        if (!isBuiltIn(profile)) return undefined;
+        const fresh = await protectDefault(environment, profile);
+        return fresh.protectedHistoryRoots ? fresh : undefined;
+      },
       materialize: (context) => materializer.materialize(context),
       resolveRole: (step) => step === 'pr.finalize' ? 'reviewer' : 'implementer',
       onWorkspaceRootResolved: async (runId, repoRoot, branchName, provisionedBaseRef) => {
@@ -1549,12 +1566,6 @@ export async function createControlPlaneServer(
       }
     };
 
-    const resolveFreshConversation = createFreshConversationResolver();
-    const prepareFreshConversation: PrepareFreshConversation = (environment, profile) => {
-      const builtIn = realDispatchEnabled && !fakeDispatchEnabled && profile !== undefined &&
-        !baseAdapters.has(buildProviderAdapterKey(profile.providerKind, profile.adapterId));
-      return resolveFreshConversation(environment, builtIn ? profile : undefined);
-    };
     const executionUnitOfWork = createExecutionRunUnitOfWork({
       prepareFreshConversation,
       execute: entryPoint,
@@ -1832,6 +1843,20 @@ export async function createControlPlaneServer(
           const port = createReviewedAttemptPort({
             repository: agentConversations, roleInput, prepareFreshConversation, freshHandoff: renderReviewedHandoff({ evidence, requiredFindingIds, requiredDispositions }),
             ...(workspaceRoot ? { workspacesRoot: workspaceRoot } : {}),
+            ...(workspaceRoot && project && workspace?.roots ? {
+              admit: (environment, generation, profile) => isBuiltIn(profile) ? nativeHistory.admit({
+                environment, generation, profile, tenant: roleInput.tenant, workspaceRoot,
+                referencedScopes: () => agentConversations.referencedScopes(roleInput.tenant, roleInput.runId, generation)
+              }) : Promise.resolve(undefined),
+              async reconcileWorkspace(environment, generation) {
+                if (environment.workspace.shape !== 'two_roots') return;
+                const live = agentConversations.referencedScopes(roleInput.tenant, roleInput.runId, generation);
+                await nativeHistory.lifecycle.reconcileConversationScopes({
+                  runRoot: dirname(environment.workspace.repoRoot), runId: roleInput.runId, tenant: roleInput.tenant,
+                  keep: (scope, owner) => owner.generation === generation && live.has(scope)
+                });
+              }
+            } : {}),
             ...(project ? { repositoryIdentity: `${project.hostRepository.owner}/${project.hostRepository.name}`.toLowerCase() } : {}),
             ...(project && workspace?.roots ? {
               hostRepository: join(workspace.roots.reposRoot, project.hostRepository.owner, project.hostRepository.name)
@@ -2151,6 +2176,7 @@ export async function createControlPlaneServer(
   // after persistence/configuration and the orchestrator are ready, and before the
   // service begins accepting traffic. A failure for one run is logged safely and never
   // prevents later runs from being reconciled or the service from starting.
+  if (realDispatchEnabled && !fakeDispatchEnabled) await nativeHistory.recover();
   if (options.workspaceRoots !== undefined) {
     const reconcileRoots = options.workspaceRoots;
     const twoRootWorkKinds = new Set(['feature', 'enhancement', 'bug', 'chore']);
@@ -2194,7 +2220,26 @@ export async function createControlPlaneServer(
         listNonTerminalRuns: () =>
           domainRepos.runs.listNonTerminal !== undefined ? domainRepos.runs.listNonTerminal() : Promise.resolve([]),
         buildProvisionRequest: buildReconcileProvisionRequest,
-        provisionWorkspace,
+        provisionWorkspace: async request => {
+          const result = await provisionWorkspace(request);
+          if (realDispatchEnabled && !fakeDispatchEnabled && result.shape === 'two_roots') {
+            try {
+              const ready = agentConversations.readyWorkspaceScopes({ tenant: request.project.tenant, runId: request.runId,
+                root: result.repoRoot, branch: result.branchName });
+              const reconciled = await nativeHistory.lifecycle.reconcileConversationScopes({
+                runRoot: result.runRoot, runId: request.runId, tenant: request.project.tenant,
+                // If the durable workspace binding is missing, do not infer that all scopes are overdue.
+                keep: (scope, owner) => !ready || (owner.generation === ready.generation && ready.scopes.has(scope))
+              });
+              if (!reconciled) app.log.warn({ runId: request.runId, code: 'conversation_writer_unverified' },
+                'Private conversation reclamation remains pending.');
+            } catch {
+              app.log.warn({ runId: request.runId, code: 'conversation_reconciliation_unavailable' },
+                'Private conversation reconciliation is unavailable.');
+            }
+          }
+          return result;
+        },
         orchestrator,
         logger: {
           info: (fields, message) => app.log.info(fields, message),

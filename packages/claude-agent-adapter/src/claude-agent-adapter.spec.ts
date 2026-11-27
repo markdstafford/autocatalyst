@@ -71,6 +71,30 @@ describe('Claude native conversation launch options', () => {
     else expect(calls[0]).not.toHaveProperty('persistSession');
   });
 
+  it.each([true, false])('protects history on fresh work with verified non-persistence = %s', async verifiedNonPersistence => {
+    const cwd = await mkdtemp(path.join(tmpdir(), 'claude-fresh-conversation-'));
+    const { input } = makeSessionInput({ repoRoot: cwd, scratchRoot: cwd });
+    const root = cwd + '-private-history';
+    const query = vi.fn(async function* ({ options }: { options?: Record<string, unknown> }) {
+      expect(options).toMatchObject({
+        settings: {
+          sandbox: { enabled: true, failIfUnavailable: true, filesystem: { denyRead: [root], denyWrite: [root] } },
+          permissions: { deny: expect.arrayContaining(['Read(/' + root + '/**)', 'Edit(/' + root + '/**)']) }
+        }
+      });
+      expect(options).not.toHaveProperty('resume');
+      if (verifiedNonPersistence) expect(options).toHaveProperty('persistSession', false);
+      else expect(options).not.toHaveProperty('persistSession');
+      yield { type: 'result', subtype: 'success', result: 'OK' };
+    });
+    try {
+      await drain({ ...input, runInput: { ...input.runInput, nativeConversation: {
+        mode: 'fresh_only', verifiedNonPersistence, protectedHistoryRoots: [root]
+      } } }, query);
+      expect(query).toHaveBeenCalledTimes(1);
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+
   it.each(['missing', 'wrong-root', 'resume'] as const)('handles a %s root session without replaying work', async mode => {
     const cwd = await mkdtemp(path.join(tmpdir(), 'claude-native-conversation-'));
     try {

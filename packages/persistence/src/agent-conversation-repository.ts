@@ -67,6 +67,26 @@ export class DrizzleAgentConversationRepository {
     }, { behavior: 'immediate' });
   }
 
+  /** Called under workspace ownership; only live slot references preserve history. */
+  referencedScopes(tenant: string, runId: string, generation: string): ReadonlySet<string> {
+    const rows = this.#db.select({ id: slots.storageScope, state: slots.state }).from(slots)
+      .where(and(eq(slots.tenant, tenant), eq(slots.runId, runId), eq(slots.workspaceGeneration, generation))).all();
+    return new Set(rows.flatMap(row => row.state !== 'retired' && row.id ? [row.id] : []));
+  }
+
+  /** Startup only: work that was still in flight did not publish a reusable scope. */
+  readyWorkspaceScopes(input: { tenant: string; runId: string; root: string; branch: string }) {
+    const workspace = this.#db.select({ generation: workspaces.generation }).from(workspaces)
+      .innerJoin(runs, eq(runs.id, workspaces.runId))
+      .where(and(eq(runs.id, input.runId), eq(runs.tenant, input.tenant), eq(workspaces.workspaceRepoRoot, input.root),
+        eq(workspaces.workspaceHandle, input.branch), isNotNull(workspaces.enrollmentProof))).get();
+    if (!workspace) return undefined;
+    const ready = this.#db.select({ id: slots.storageScope }).from(slots)
+      .where(and(eq(slots.tenant, input.tenant), eq(slots.runId, input.runId),
+        eq(slots.workspaceGeneration, workspace.generation), eq(slots.state, 'ready'))).all();
+    return { generation: workspace.generation, scopes: new Set(ready.map(row => row.id)) };
+  }
+
   begin(attempt: ReviewedDispatchAttempt, binding?: ConversationBinding, mode?: 'fallback'): ConversationClaim | undefined {
     return this.#db.transaction(tx => {
       const owner = tx.select({ step: runs.currentStep }).from(runs)

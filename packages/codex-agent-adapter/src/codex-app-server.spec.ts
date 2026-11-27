@@ -80,6 +80,18 @@ function launchOptions(cwd: string, mode = ''): CodexSessionLaunchOptions {
 }
 
 describe('Codex app-server wire boundary', () => {
+  it('applies the named history deny profile to an ephemeral turn', async () => {
+    await withCli(async (binary, cwd) => {
+      const events: CodexNativeEvent[] = [];
+      for await (const event of codexSessionLaunch(binary)({
+        ...launchOptions(cwd), conversation: {
+          mode: 'fresh_only', verifiedNonPersistence: true, protectedHistoryRoots: [cwd + '-history']
+        }
+      })) events.push(event);
+      expect(events.some(event => event.type === 'result')).toBe(true);
+    });
+  });
+
   it('starts a persisted thread and uses only the acknowledged turn after resume', async () => {
     await withCli(async (binary, cwd) => {
       const completed: string[] = [];

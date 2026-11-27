@@ -122,7 +122,7 @@ export async function reviewedWorkspaceProof(
   }
 }
 
-interface VerifiedLaunch {
+export interface VerifiedLaunch {
   readonly build: RetentionBuild;
   readonly authenticatedBinding: string;
   readonly credentialRevision: string;
@@ -131,7 +131,10 @@ interface VerifiedLaunch {
   open(resume?: ConversationClaim['resume']): Promise<{
     readonly storageScope: string;
     readonly native: Omit<Extract<NativeConversationTurn, { mode: 'retained' }>, 'mode' | 'resumeId' | 'completed'>;
+    /** Production must establish writer exit and release the home before publication. */
+    finish?(): Promise<boolean>;
   } | undefined>;
+  reconcile?(): Promise<void>;
 }
 
 export function createReviewedAttemptPort(input: {
@@ -143,6 +146,7 @@ export function createReviewedAttemptPort(input: {
   readonly freshHandoff: string;
   /** Internal qualification seam; server composition does not accept overrides. */
   readonly admit?: (environment: MaterializedExecutionEnvironment, generation: string, profile: ResolvedAgentRunnerProfile) => Promise<VerifiedLaunch | undefined>;
+  readonly reconcileWorkspace?: (environment: MaterializedExecutionEnvironment, generation: string) => Promise<void>;
   readonly prepareFreshConversation?: PrepareFreshConversation;
   readonly benchmarkArm?: 'A' | 'B';
   readonly qualifiedBuild?: (build: RetentionBuild) => boolean;
@@ -154,7 +158,8 @@ export function createReviewedAttemptPort(input: {
       (step === 'spec.author' && !roleInput.specReview)) return undefined;
   const prepareFreshConversation = input.prepareFreshConversation ?? createFreshConversationResolver();
   let prepared: ReviewedDispatchAttempt | undefined;
-  let active: { attempt: ReviewedDispatchAttempt; claim: ConversationClaim; handle?: string; storageScope?: string } | undefined;
+  let active: { attempt: ReviewedDispatchAttempt; claim: ConversationClaim; handle?: string; storageScope?: string;
+    opened?: Awaited<ReturnType<VerifiedLaunch['open']>>; launch: VerifiedLaunch } | undefined;
 
   async function assertOwner() {
     if (occurrence?.stillOwns && !await occurrence.stillOwns()) throw new Error('reviewed_dispatch_not_owned');
@@ -179,8 +184,11 @@ export function createReviewedAttemptPort(input: {
       const ws = environment.workspace;
       let binding: ConversationBinding | undefined;
       let launch: VerifiedLaunch | undefined;
+      let workspaceProof: string | null = null;
+      let workspaceGeneration: string | null = null;
       if (ws.shape === 'two_roots' && input.workspacesRoot) {
         const proof = await reviewedWorkspaceProof(environment, input.workspacesRoot, input.hostRepository);
+        workspaceProof = proof;
         await assertOwner();
         let generation: string | null = null;
         try {
@@ -188,6 +196,7 @@ export function createReviewedAttemptPort(input: {
             tenant: attempt.tenant, runId: attempt.runId, root: ws.repoRoot, branch: ws.branchName, proof
           });
         } catch { /* Workspace ownership is independent of continuity storage. */ }
+        workspaceGeneration = generation;
 
         const pr = roleInput.ciRepair?.prBinding;
         const specPath = roleInput.specReview?.canonicalPath;
@@ -227,12 +236,19 @@ export function createReviewedAttemptPort(input: {
         if (error instanceof Error && error.message === 'reviewed_dispatch_not_owned') throw error;
         return nativeProvider ? fresh : undefined;
       }
-      if (!claim || !launch) return nativeProvider ? fresh : undefined;
-      active = { attempt, claim };
+      if (!claim || !launch) {
+        if (workspaceGeneration) {
+          await assertOwner();
+          await input.reconcileWorkspace?.(environment, workspaceGeneration).catch(() => undefined);
+        }
+        return nativeProvider ? fresh : undefined;
+      }
+      active = { attempt, claim, launch };
       const opened = await launch.open(claim.resume).catch(() => undefined);
+      if (opened) active.opened = opened;
       await assertOwner();
       const hasRoot = claim.resume && launch.build.provider === 'claude'
-        ? ws.shape === 'two_roots' && await opened?.native.lookupRootSession?.(claim.resume.handle, ws.repoRoot).catch(() => false)
+        ? ws.shape === 'two_roots' && await opened?.native.lookupRootSession?.(claim.resume.handle, ws.scratchRoot).catch(() => false)
         : true;
       if (!opened || !hasRoot || !await opened.native.verifyLaunch().catch(() => false) ||
           (claim.resume && opened.storageScope !== claim.resume.storageScope)) {
@@ -240,6 +256,8 @@ export function createReviewedAttemptPort(input: {
           input.repository.finish(attempt, claim);
           input.repository.markFreshAfterPreflight(attempt);
         } catch { /* In-flight history is not selectable. */ }
+        await opened?.finish?.().catch(() => false);
+        await launch.reconcile?.().catch(() => undefined);
         active = undefined;
         return fresh;
       }
@@ -247,6 +265,12 @@ export function createReviewedAttemptPort(input: {
       active.storageScope = opened.storageScope;
       return {
         ...opened.native, mode: 'retained', ...(claim.resume ? { resumeId: claim.resume.handle } : {}),
+        async verifyLaunch() {
+          await assertOwner();
+          return Boolean(input.workspacesRoot && workspaceProof &&
+            await reviewedWorkspaceProof(environment, input.workspacesRoot, input.hostRepository) === workspaceProof &&
+            await opened.native.verifyLaunch());
+        },
         completed(handle) { if (active?.attempt.id === attemptId) active.handle = handle; }
       };
     },
@@ -262,14 +286,17 @@ export function createReviewedAttemptPort(input: {
         prepared = undefined;
       }
       if (active?.attempt.id !== attemptId) return;
-      const { attempt, claim, handle, storageScope } = active;
+      const { attempt, claim, handle, storageScope, opened, launch } = active;
       active = undefined;
+      const writerReleased = !opened?.finish || await opened.finish().catch(() => false);
       const owned = !occurrence.stillOwns || await occurrence.stillOwns();
       const required = roleInput.reviewContext?.requiredDispositions?.map(item => item.feedbackId) ?? [];
       const result = required.length ? implementerDispositionsResultSchema.safeParse(checkpoint) : undefined;
       const dispositions = result?.success ? result.data.dispositions ?? [] : [];
       const validDispositions = required.every(id => dispositions.filter(item => item.feedbackId === id).length === 1);
-      input.repository.finish(attempt, claim, accepted && owned && validDispositions && handle && storageScope ? { handle, storageScope } : undefined);
+      input.repository.finish(attempt, claim, accepted && owned && writerReleased && validDispositions && handle && storageScope
+        ? { handle, storageScope } : undefined);
+      if (owned) await launch.reconcile?.().catch(() => undefined);
     }
   };
 }

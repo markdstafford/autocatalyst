@@ -388,3 +388,9 @@ export {
 } from './usage-normalization.js';
 
 export * from './native-conversation.js';
+export {
+  acquireNativeHistoryLease, releaseNativeHistoryLease, nativeHistoryLeaseOwner,
+  createPrivateConversationScope, privateConversationScopePath, privateConversationDirectory,
+  type WorkspaceConversationWriter
+} from './internal/workspace-conversation-custody.js';
+export { createWorkspaceLifecycle } from './workspace.js';

@@ -1,4 +1,5 @@
 import { NativeResumeRefused, protectedHistoryRoots } from '@autocatalyst/execution';
+import type { NativeConversationProcess } from '@autocatalyst/execution';
 import { ClaudeUsage, type ClaudeAccountingAnomaly } from './claude-usage.js';
 import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -286,9 +287,10 @@ async function* realSDKLaunch(
   }
 
   const retention = opts.conversation?.mode === 'retained' ? opts.conversation : undefined;
-  const historyRoots = protectedHistoryRoots(retention?.protectedHistoryRoots,
-    opts.workspaceRoots ?? (opts.cwd ? [opts.cwd] : []));
-  if (retention && (!historyRoots || !await retention.verifyLaunch())) {
+  const requestedProtection = opts.conversation?.protectedHistoryRoots;
+  const historyRoots = protectedHistoryRoots(requestedProtection,
+    [...(opts.workspaceRoots ?? []), ...(opts.cwd ? [opts.cwd] : [])]);
+  if ((requestedProtection && !historyRoots) || (retention && (!historyRoots || !await retention.verifyLaunch()))) {
     throw new ProviderConfigurationError('unsupported_required_capability', 'Native conversation confinement was not verified.');
   }
   if (retention?.resumeId && (!opts.cwd || !await retention.lookupRootSession?.(retention.resumeId, opts.cwd))) {
@@ -308,7 +310,15 @@ async function* realSDKLaunch(
     delete sdkOpts['resumeSessionAt'];
     delete sdkOpts['continue'];
     delete sdkOpts['forkSession'];
-    if (retention) {
+    if (historyRoots) {
+      // The SDK merges process.env into opts.env. Do not expose bootstrap
+      // supervisor or other provider-home configuration to its tool process.
+      sdkOpts['env'] = {
+        ...opts.env, ...retention?.scopeEnvironment,
+        AUTOCATALYST_NATIVE_HISTORY_SUPERVISOR: '',
+        AUTOCATALYST_CODEX_BUSINESS_HISTORY_HOME: '',
+        AUTOCATALYST_CLAUDE_SUBSCRIPTION_HISTORY_HOME: ''
+      };
       const configured = sdkOpts['settings'];
       if (configured !== undefined && (typeof configured !== 'object' || configured === null || Array.isArray(configured))) {
         throw new ProviderConfigurationError('unsupported_required_capability', 'Native conversation settings could not be protected.');
@@ -317,7 +327,7 @@ async function* realSDKLaunch(
       if (settings?.['sandbox'] !== undefined) {
         throw new ProviderConfigurationError('unsupported_required_capability', 'Native conversation sandbox has conflicting settings.');
       }
-      const protectedRoots = historyRoots!;
+      const protectedRoots = historyRoots;
       const permissions = settings?.['permissions'] as { deny?: string[] } | undefined;
       sdkOpts['settingSources'] = [];
       sdkOpts['settings'] = {
@@ -332,9 +342,19 @@ async function* realSDKLaunch(
           filesystem: { denyRead: protectedRoots, denyWrite: protectedRoots }
         }
       };
+    }
+    if (retention) {
       sdkOpts['persistSession'] = true;
-      sdkOpts['resume'] = retention.resumeId;
-      if (!retention.resumeId) delete sdkOpts['resume'];
+      if (retention.resumeId) sdkOpts['resume'] = retention.resumeId;
+      const supervised = retention.supervisedProcess;
+      if (supervised) {
+        sdkOpts['pathToClaudeCodeExecutable'] = supervised.executable;
+        sdkOpts['spawnClaudeCodeProcess'] = (options: Parameters<NativeConversationProcess['spawn']>[0]) => {
+          const child = supervised.spawn(options);
+          child.stderr.resume();
+          return child;
+        };
+      }
     } else if (opts.conversation.mode === 'fresh_only' && opts.conversation.verifiedNonPersistence) {
       sdkOpts['persistSession'] = false;
     }
@@ -663,7 +683,9 @@ export function createClaudeAgentAdapter(
             launchEnv['MAX_THINKING_TOKENS'] = '';
             launchEnv['CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING'] = '';
           }
-          if (subscription && !await probeAuth(launchEnv)) {
+          const supervisedRetained = runInput.nativeConversation?.mode === 'retained' &&
+            runInput.nativeConversation.supervisedProcess !== undefined;
+          if (subscription && !supervisedRetained && !await probeAuth(launchEnv)) {
             throw new ClassifiedProviderFailureError('provider_auth_failed', { providerKind: claudeProviderKind });
           }
 

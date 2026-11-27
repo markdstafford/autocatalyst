@@ -23,16 +23,35 @@ export interface WorkspacePruner {
   pruneWorkspacePath(request: PruneWorkspacePathRequest): Promise<WorkspacePruneResult>;
 }
 
+type ReconcileConversationScopes = (input: { runRoot: string; runId: string; tenant?: string;
+  keep?: (id: string, marker: WorkspaceConversationWriter) => boolean }) => Promise<boolean>;
+
 // This module is the single policy-level gateway for workspace filesystem deletion.
 // Teardown and rollback code must call this pruner instead of calling driver.removeDirectory
 // or driver.removeWorktree directly.
 
 const roundDuration = (durationMs: number): number => Math.max(0, Math.round(durationMs));
 
-export function createWorkspacePruner(dependencies: WorkspacePrunerDependencies): WorkspacePruner {
+export function createWorkspacePruner(dependencies: WorkspacePrunerDependencies): WorkspacePruner & {
+  reconcileConversationScopes: ReconcileConversationScopes;
+} {
   const { driver } = dependencies;
   const now = dependencies.now ?? (() => performance.now());
   const logger = dependencies.logger ?? consoleWorkspaceLogger;
+
+  const reconcileConversationScopes: ReconcileConversationScopes = input => {
+    return drainPrivateConversationScopes({
+      ...input,
+      ...(dependencies.conversationWriterExited ? { writerExited: dependencies.conversationWriterExited } : {}),
+      async removeOwnedScope(scope) {
+        await assertPathInsideRootWithoutFinalSymlinkResolution(
+          { root: input.runRoot, rootKind: 'workspace', targetPath: scope, intent: 'delete' },
+          { pathExists: p => driver.pathExists(p), realpath: p => driver.realpath(p) }
+        );
+        await driver.removeDirectory({ workspaceRoot: input.runRoot, targetPath: scope });
+      }
+    });
+  };
 
   async function finish(
     request: PruneWorkspacePathRequest,
@@ -65,6 +84,7 @@ export function createWorkspacePruner(dependencies: WorkspacePrunerDependencies)
   }
 
   return {
+    reconcileConversationScopes,
     async pruneWorkspacePath(request) {
       const startedAt = now();
       logger.emit('info', {
@@ -97,17 +117,7 @@ export function createWorkspacePruner(dependencies: WorkspacePrunerDependencies)
       const target = path.resolve(request.targetPath);
       const runRoot = request.mode === 'worktree' && path.basename(target) === 'repo' ? path.dirname(target) : target;
       if (path.basename(runRoot) === request.runId) {
-        const drained = await drainPrivateConversationScopes({
-          runRoot, runId: request.runId,
-          ...(dependencies.conversationWriterExited ? { writerExited: dependencies.conversationWriterExited } : {}),
-          async removeOwnedScope(scope) {
-            await assertPathInsideRootWithoutFinalSymlinkResolution(
-              { root: runRoot, rootKind: 'workspace', targetPath: scope, intent: 'delete' },
-              { pathExists: p => driver.pathExists(p), realpath: p => driver.realpath(p) }
-            );
-            await driver.removeDirectory({ workspaceRoot: runRoot, targetPath: scope });
-          }
-        });
+        const drained = await reconcileConversationScopes({ runRoot, runId: request.runId });
         if (!drained) return finish(request, startedAt, 'rejected', 'conversation_writer_unverified');
       }
 

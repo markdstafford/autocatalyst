@@ -5,6 +5,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import { NativeResumeRefused, ProviderConnectionError, ProviderProtocolError, UnsupportedProviderCapabilityError, protectedHistoryRoots, runtimeSkillsCatalogRoot } from '@autocatalyst/execution';
+import type { NativeConversationProcess } from '@autocatalyst/execution';
 
 import { CodexUsage } from './codex-usage.js';
 import { CodexAuthenticationError, type CodexAuthProbe, type CodexAuthMode } from './codex-auth.js';
@@ -36,14 +37,18 @@ export function codexProcessEnvironment(overrides: Readonly<Record<string, strin
 export async function openCodexAppServer(options: {
   binary: string; cwd?: string; env?: Readonly<Record<string, string>>;
   timeoutMs?: number; signal?: AbortSignal; experimentalApi?: boolean;
+  supervisedProcess?: NativeConversationProcess;
 }): Promise<CodexAppServerClient> {
   const env = codexProcessEnvironment(options.env);
   try {
-    const version = await promisify(execFile)(options.binary, ['--version'], { env, timeout: 5_000, maxBuffer: 4096 });
-    if (version.stdout.trim() !== `codex-cli ${CODEX_SUPPORTED_VERSION}`) throw failure();
+    // The production supervisor verifies the pinned executable before granting the writer.
+    if (!options.supervisedProcess) {
+      const version = await promisify(execFile)(options.binary, ['--version'], { env, timeout: 5_000, maxBuffer: 4096 });
+      if (version.stdout.trim() !== `codex-cli ${CODEX_SUPPORTED_VERSION}`) throw failure();
+    }
   } catch { throw failure(); }
   if (options.signal?.aborted) throw failure();
-  const client = new CodexAppServerClient(options.binary, env, options.cwd, options.timeoutMs ?? 30_000, options.signal);
+  const client = new CodexAppServerClient(options.binary, env, options.cwd, options.timeoutMs ?? 30_000, options.signal, options.supervisedProcess);
   try {
     await client.rpc('initialize', {
       clientInfo: { name: 'autocatalyst', title: 'Autocatalyst', version: '0.1.0' },
@@ -64,14 +69,19 @@ export class CodexAppServerClient {
   readonly #timer: ReturnType<typeof setTimeout>;
   readonly #abort: () => void;
   readonly #signal: AbortSignal | undefined;
-  constructor(binary: string, env: NodeJS.ProcessEnv, cwd: string | undefined, timeoutMs: number, signal?: AbortSignal) {
-    this.#child = spawn(binary, [
+  constructor(binary: string, env: NodeJS.ProcessEnv, cwd: string | undefined, timeoutMs: number, signal?: AbortSignal,
+    supervisor?: NativeConversationProcess) {
+    const args = [
       'app-server', '--listen', 'stdio://',
       '-c', 'forced_login_method="chatgpt"', '-c', 'model_provider="openai"',
       '--disable', 'plugins', '--disable', 'apps', '--disable', 'hooks',
       '--disable', 'multi_agent', '--disable', 'skill_mcp_dependency_install',
       '--enable', 'skip_host_skill_discovery', '-c', 'web_search="disabled"'
-    ], { env, ...(cwd !== undefined ? { cwd } : {}), stdio: ['pipe', 'pipe', 'ignore'] });
+    ];
+    const options = { env, ...(cwd !== undefined ? { cwd } : {}) };
+    this.#child = supervisor ? supervisor.spawn({ command: supervisor.executable, args, ...options })
+      : spawn(binary, args, { ...options, stdio: ['pipe', 'pipe', 'ignore'] });
+    this.#child.stderr?.resume();
     this.#child.stdin.on('error', () => this.#fail());
     this.#child.on('error', () => this.#fail());
     this.#child.on('close', () => this.#fail());
@@ -193,8 +203,10 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
     const retention = options.conversation?.mode === 'retained' ? options.conversation : undefined;
     const workspaceRoots = options.workspaceRoots ?? [];
     const workspaces = options.cwd ? [...new Set([options.cwd, ...workspaceRoots])] : workspaceRoots;
-    const historyRoots = protectedHistoryRoots(retention?.protectedHistoryRoots, workspaces);
-    if (retention && (!historyRoots || !retention.verifyAccount || !await retention.verifyLaunch())) throw failure();
+    const requestedProtection = options.conversation?.protectedHistoryRoots;
+    const historyRoots = protectedHistoryRoots(requestedProtection, workspaces);
+    if ((requestedProtection && !historyRoots) || (retention && (!historyRoots || !retention.verifyAccount ||
+        !await retention.verifyLaunch()))) throw failure();
     const permissionId = 'autocatalyst-retained';
     const permissionBase = options.sandbox === 'read-only' ? ':read-only' : ':workspace';
     const protectedProfile = historyRoots ? {
@@ -211,6 +223,7 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
     } : undefined;
     const client = await openCodexAppServer({ binary, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
       ...(protectedProfile ? { experimentalApi: true } : {}),
+      ...(retention?.supervisedProcess ? { supervisedProcess: retention.supervisedProcess } : {}),
       env: { ...options.env, ...retention?.scopeEnvironment }, timeoutMs: options.timeoutMs ?? 600_000,
       ...(options.signal !== undefined ? { signal: options.signal } : {}) });
     let accounting: CodexUsage | undefined;
@@ -242,7 +255,7 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
       const sandbox = record(response['sandbox']);
       const expected = options.sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite';
       if (sandbox['type'] !== expected) throw failure();
-      if (retention) {
+      if (protectedProfile) {
         const permission = record(response['activePermissionProfile']);
         const writable = sandbox['writableRoots'];
         const wrongWorkspacePolicy = expected === 'workspaceWrite' && (

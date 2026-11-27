@@ -681,7 +681,11 @@ export function createCodexAgentAdapter(
           // Enterprise sign-in probe (never reads/logs raw credentials). No
           // fallback to OPENAI_API_KEY or any other account.
           // --------------------------------------------------------------
-          const authResult = await probeAuth({ env: safeEnvironment, signal: cancellation.signal, ...(cwd !== undefined ? { cwd } : {}) });
+          const supervised = runInput.nativeConversation?.mode === 'retained' &&
+            runInput.nativeConversation.supervisedProcess !== undefined;
+          // The supervised App Server checks plan and exact account on the actual connection.
+          const authResult = supervised ? { status: 'authenticated' as const, accountType: 'business' as const }
+            : await probeAuth({ env: safeEnvironment, signal: cancellation.signal, ...(cwd !== undefined ? { cwd } : {}) });
           if (authResult.status !== 'authenticated') {
             safeLog('error', 'codex.adapter.auth_failed', {
               runId,

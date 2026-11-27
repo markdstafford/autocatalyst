@@ -13,12 +13,17 @@ export interface WorkspaceConversationWriter {
   /** Host-issued, restart-safe identities. A PID is not sufficient. */
   readonly writerIdentity: string;
   readonly descendantGroup: string;
+  readonly provider?: 'codex' | 'claude';
+  readonly storageHome?: string;
 }
 
 function validWriter(value: unknown): value is WorkspaceConversationWriter {
   if (!value || typeof value !== 'object') return false;
   const row = value as Record<string, unknown>;
-  return row['version'] === 1 && ['tenant', 'runId', 'generation', 'writerIdentity', 'descendantGroup']
+  return row['version'] === 1 && (row['provider'] === undefined || row['provider'] === 'codex' || row['provider'] === 'claude') &&
+    (row['storageHome'] === undefined || (typeof row['storageHome'] === 'string' &&
+      path.isAbsolute(row['storageHome']) && path.normalize(row['storageHome']) === row['storageHome'])) &&
+    ['tenant', 'runId', 'generation', 'writerIdentity', 'descendantGroup']
     .every(key => typeof row[key] === 'string' && row[key].trim() !== '' && row[key].length <= 256);
 }
 
@@ -58,6 +63,8 @@ export async function createPrivateConversationScope(runRoot: string, writer: Wo
 export async function drainPrivateConversationScopes(input: {
   runRoot: string;
   runId: string;
+  tenant?: string;
+  keep?: (id: string, marker: WorkspaceConversationWriter) => boolean;
   writerExited?: (marker: WorkspaceConversationWriter) => Promise<boolean>;
   removeOwnedScope: (scope: string) => Promise<void>;
 }): Promise<boolean> {
@@ -84,10 +91,13 @@ export async function drainPrivateConversationScopes(input: {
         if (same.ino !== markerStat.ino || same.dev !== markerStat.dev || same.size !== markerStat.size) return false;
         marker = JSON.parse(await markerFile.readFile('utf8')) as unknown;
       } finally { await markerFile.close(); }
-      if (!validWriter(marker) || marker.runId !== input.runId || !await input.writerExited(marker)) return false;
+      if (!validWriter(marker) || marker.runId !== input.runId ||
+          (input.tenant !== undefined && marker.tenant !== input.tenant) || !await input.writerExited(marker)) return false;
+      if (input.keep?.(name, marker)) continue;
       await input.removeOwnedScope(scope);
+      if (await exists(scope)) return false;
     }
-    return (await readdir(root)).length === 0;
+    return input.keep !== undefined || (await readdir(root)).length === 0;
   } catch {
     return false;
   }
@@ -103,6 +113,23 @@ type HistoryProvider = keyof typeof providerHistoryDirectories;
 const nativeHistoryLeaseDirectory = '.autocatalyst-history-lease';
 const nativeHistoryRetiringDirectory = '.autocatalyst-history-retiring';
 const releasingNativeHomes = new Set<string>();
+
+/** Ignore unrelated writers, but never mistake a malformed lease for an absent one. */
+export async function nativeHistoryLeaseOwner(home: string): Promise<WorkspaceConversationWriter | null> {
+  if (!await privateDirectory(home)) throw new Error('Native history home is not private.');
+  const dirs = await Promise.all([nativeHistoryRetiringDirectory, nativeHistoryLeaseDirectory].map(async name => {
+    const dir = path.join(home, name);
+    return await exists(dir) ? dir : undefined;
+  }));
+  const present = dirs.filter((dir): dir is string => dir !== undefined);
+  if (present.length === 0) return null;
+  if (present.length !== 1) throw new Error('Native history lease is uncertain.');
+  return (await readNativeHistoryLease(present[0]!)).writer;
+}
+
+export function privateConversationScopePath(runRoot: string, id: string): string | undefined {
+  return scopeIdPattern.test(id) ? path.join(runRoot, privateConversationDirectory, id) : undefined;
+}
 
 async function exists(pathname: string): Promise<boolean> {
   try { await lstat(pathname); return true; }
@@ -136,6 +163,7 @@ async function readNativeHistoryLease(lease: string): Promise<NativeHistoryLease
   if (!row || (row.provider !== 'codex' && row.provider !== 'claude') ||
       typeof row.scope !== 'string' || !path.isAbsolute(row.scope) || path.normalize(row.scope) !== row.scope ||
       !validWriter(row.writer)) throw new Error('Native history lease owner is invalid.');
+  if (row.writer.provider !== undefined && row.writer.provider !== row.provider) throw new Error('Native history lease provider mismatch.');
   return { provider: row.provider, scope: row.scope, writer: row.writer };
 }
 
@@ -173,7 +201,9 @@ export async function acquireNativeHistoryLease(input: {
 }): Promise<{ verify(): Promise<boolean> } | undefined> {
   const { home, scope, provider, writer } = input;
   const expectedRunRoot = path.dirname(path.dirname(scope));
-  if (!validWriter(writer) || path.basename(expectedRunRoot) !== writer.runId ||
+  if (!validWriter(writer) || (writer.provider !== undefined && writer.provider !== provider) ||
+      (writer.storageHome !== undefined && writer.storageHome !== home) ||
+      path.basename(expectedRunRoot) !== writer.runId ||
       path.basename(path.dirname(scope)) !== privateConversationDirectory ||
       !scopeIdPattern.test(path.basename(scope)) ||
       home === scope || home.startsWith(scope + path.sep) || scope.startsWith(home + path.sep)) return undefined;
@@ -186,7 +216,8 @@ export async function acquireNativeHistoryLease(input: {
       return undefined;
     }
     const owner = await readPrivateOwner(scope);
-    if (!validWriter(owner) || owner.tenant !== writer.tenant || owner.runId !== writer.runId ||
+    if (!validWriter(owner) || owner.provider !== writer.provider || owner.storageHome !== writer.storageHome ||
+        owner.tenant !== writer.tenant || owner.runId !== writer.runId ||
         owner.generation !== writer.generation) return undefined;
     previous = owner;
     await mkdir(lease, { mode: 0o700 });
@@ -245,7 +276,8 @@ export async function acquireNativeHistoryLease(input: {
             actual.writer.writerIdentity === writer.writerIdentity &&
             actual.writer.descendantGroup === writer.descendantGroup &&
             actual.writer.runId === writer.runId && actual.writer.tenant === writer.tenant &&
-            actual.writer.generation === writer.generation && await historyLinksMatch(home, actual, false);
+            actual.writer.generation === writer.generation && actual.writer.storageHome === writer.storageHome &&
+            await historyLinksMatch(home, actual, false);
         } catch { return false; }
       }
     };
@@ -274,7 +306,8 @@ export async function releaseNativeHistoryLease(input: {
     if (!await privateDirectory(home)) return false;
     const alreadyRetiring = await exists(retiring);
     const marker = await readNativeHistoryLease(alreadyRetiring ? retiring : lease);
-    if (!await historyLinksMatch(home, marker, true) || !await input.writerExited(marker.writer)) return false;
+    if ((marker.writer.storageHome !== undefined && marker.writer.storageHome !== home) ||
+        !await historyLinksMatch(home, marker, true) || !await input.writerExited(marker.writer)) return false;
     if (!alreadyRetiring) {
       await rename(lease, retiring);
       await syncPrivateDirectory(home);
@@ -287,9 +320,12 @@ export async function releaseNativeHistoryLease(input: {
       }) === path.join(marker.scope, name)) await unlink(link);
     }
     await syncPrivateDirectory(home);
-    await unlink(path.join(retiring, 'owner.json'));
-    await rmdir(retiring);
+    // Commit release atomically while the evidence still exists. A crash
+    // between clearing the marker and rmdir must not strand an opaque lease.
+    const released = path.join(home, '.autocatalyst-history-released-' + randomUUID());
+    await rename(retiring, released);
     await syncPrivateDirectory(home);
+    await unlink(path.join(released, 'owner.json')).then(() => rmdir(released)).catch(() => undefined);
     return true;
   } catch { return false; }
   finally { releasingNativeHomes.delete(home); }

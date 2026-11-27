@@ -14,4 +14,4 @@ export type {
 
 export type { ClaudeSdkQuery } from './claude-agent-adapter.js';
 
-export { readClaudeLaunchBuild } from './claude-launch-build.js';
+export { lookupClaudeRootSession, readClaudeLaunchBuild, readClaudeSdkVersion } from './claude-launch-build.js';

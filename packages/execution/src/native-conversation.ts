@@ -1,7 +1,11 @@
 import { isAbsolute, normalize, parse, relative, sep } from 'node:path';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 
 /** Host-only launch handoff. Never serialize it to task inputs, events, or checkpoints. */
-export type NativeConversationTurn =
+export type NativeConversationTurn = {
+  /** Host-owned directories that provider tools must be unable to read or write. */
+  readonly protectedHistoryRoots?: readonly string[];
+} & (
   | { readonly mode: 'fresh_only'; readonly verifiedNonPersistence: boolean }
   | {
       readonly mode: 'retained';
@@ -11,10 +15,21 @@ export type NativeConversationTurn =
       verifyAccount?(account: unknown): Promise<boolean>;
       lookupRootSession?(id: string, cwd: string): Promise<boolean>;
       readonly scopeEnvironment?: Readonly<Record<string, string>>;
-      /** Absolute host-owned directories that provider tools must be unable to read or write. */
-      readonly protectedHistoryRoots?: readonly string[];
+      readonly supervisedProcess?: NativeConversationProcess;
       completed(handle: string): void;
-    };
+    });
+
+/** The host issues this spawn capability for one reserved, fenced writer. */
+export interface NativeConversationProcess {
+  readonly executable: string;
+  spawn(input: {
+    readonly command: string;
+    readonly args: readonly string[];
+    readonly env: NodeJS.ProcessEnv;
+    readonly cwd?: string;
+    readonly signal?: AbortSignal;
+  }): ChildProcessWithoutNullStreams;
+}
 
 /** Reject ambiguous patterns and any protection that would revoke the workspace grant. */
 export function protectedHistoryRoots(
