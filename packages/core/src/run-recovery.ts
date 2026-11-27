@@ -1,5 +1,6 @@
 import type { Run, RunStep } from '@autocatalyst/api-contract';
 
+import { publicationRecoveryStep } from './pr-publication.js';
 import { getRunStepDefinition, type RunPhase } from './run-step-catalog.js';
 
 /**
@@ -44,19 +45,16 @@ export function phaseFirstStep(phase: RunPhase): string | null {
  * `runSteps` is expected in ascending start order (as `listByRun` returns them).
  */
 export function findStoppedStep(runSteps: readonly RunStep[]): RunStep | null {
-  for (let i = runSteps.length - 1; i >= 0; i -= 1) {
-    const candidate = runSteps[i];
-    if (candidate === undefined) continue;
+  for (const candidate of [...runSteps].sort((a, b) => b.occurrence.index - a.occurrence.index)) {
     const definition = getRunStepDefinition(candidate.step);
-    if (definition === null) continue;
-    if (definition.waitingOn === 'none') continue; // skip terminal rows (failed/done/canceled)
-    return candidate;
+    if (definition !== null && definition.waitingOn !== 'none') return candidate;
   }
   return null;
 }
 
 export interface ResolveRecoveryPlanInput {
   readonly stoppedStep: RunStep;
+  readonly failureReason?: string;
   /** Explicit operator mode, or undefined to apply the recovery policy table. */
   readonly explicitMode?: RecoveryMode;
   /**
@@ -110,6 +108,9 @@ export function resolveRecoveryPlan(input: ResolveRecoveryPlanInput): RecoveryPl
     );
   }
 
+  if (input.explicitMode !== 'start_over' && publicationRecoveryStep(input.stoppedStep, input.failureReason)) {
+    return RESUME_PLAN('pr.finalize');
+  }
   if (input.explicitMode === 'resume') {
     return RESUME_PLAN(input.stoppedStep.step);
   }

@@ -208,8 +208,8 @@ function RunDetailBody({ run, detail, currentPrincipalId, currentPrincipalIsHuma
       <div data-testid="pane-body" className="flex min-h-0 flex-1 flex-col">
         <div className="shrink-0 px-4 pb-4 pt-4">
           <RunDetailHeader run={run} />
-          {detail.specQuestion && detail.answerSpecQuestion && currentPrincipalIsHuman !== false ? (
-            <SpecQuestionReply key={detail.specQuestion.stepId} pause={detail.specQuestion} answer={detail.answerSpecQuestion} />
+          {detail.guidancePause && detail.answerGuidance && currentPrincipalIsHuman !== false ? (
+            <GuidanceReply key={detail.guidancePause.stepId} pause={detail.guidancePause} answer={detail.answerGuidance} />
           ) : null}
         </div>
         <Tabs
@@ -280,9 +280,9 @@ function RunDetailBody({ run, detail, currentPrincipalId, currentPrincipalIsHuma
   );
 }
 
-function SpecQuestionReply({ pause, answer }: {
-  pause: NonNullable<RunDetailState['specQuestion']>;
-  answer: NonNullable<RunDetailState['answerSpecQuestion']>;
+function GuidanceReply({ pause, answer }: {
+  pause: NonNullable<RunDetailState['guidancePause']>;
+  answer: NonNullable<RunDetailState['answerGuidance']>;
 }): ReactNode {
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
@@ -300,8 +300,8 @@ function SpecQuestionReply({ pause, answer }: {
         }
       });
     }}>
-      <p className="text-sm">Spec {pause.role === 'implementer' ? 'author' : 'reviewer'} asks: {pause.question}</p>
-      <Textarea aria-label="Answer spec question" value={body} onChange={event => setBody(event.target.value)} rows={2} />
+      <p className="text-sm">{pause.kind === 'spec' ? `Spec ${pause.role === 'implementer' ? 'author' : 'reviewer'} asks:` : 'CI repair needs guidance:'} {pause.question}</p>
+      <Textarea aria-label={pause.kind === 'spec' ? 'Answer spec question' : 'Give CI repair guidance'} value={body} onChange={event => setBody(event.target.value)} rows={2} />
       {error ? <p role="alert" className="text-sm text-red">{error}</p> : null}
       <Button type="submit" disabled={busy || !body.trim()}>Send answer</Button>
     </form>

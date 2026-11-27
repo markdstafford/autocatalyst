@@ -1447,7 +1447,7 @@ describe('DefaultControlPlaneService.reconcilePullRequests', () => {
     });
     const service = makeService({ orchestrator });
     const result = await service.reconcilePullRequests({ principal: reconcilePrincipal, tenant: 'tenant_1' });
-    expect(orchestrator.detectMerges).toHaveBeenCalledWith('tenant_1');
+    expect(orchestrator.detectMerges).toHaveBeenCalledWith('tenant_1', true);
     expect(orchestrator.tick).not.toHaveBeenCalled();
     expect(orchestrator.dispatch).not.toHaveBeenCalled();
     expect(result).toEqual(expectedResult);

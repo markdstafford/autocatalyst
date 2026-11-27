@@ -5,6 +5,7 @@ export interface RunWorkspaceCommitFilesInput {
   readonly workspaceRepoRoot: string;
   readonly message: string;
   readonly allowEmpty?: boolean;
+  readonly onlyPath?: string;
 }
 
 export interface RunWorkspaceCommitResult {

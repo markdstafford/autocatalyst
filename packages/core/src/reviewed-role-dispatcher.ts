@@ -42,6 +42,7 @@ export interface RunRoleWorkInput extends RunWorkInput {
   readonly role: 'implementer' | 'reviewer';
   readonly round: number;
   readonly specReview?: SpecReviewSessionInput;
+  readonly ciRepair?: { readonly failedHead: string; readonly failures: readonly import('./code-host.js').RequiredCheckEvidence[] };
   readonly reviewContext?: ReviewContext;
   readonly toolPolicyMode?: ToolPolicyMode;
   readonly routeProfileId?: string;

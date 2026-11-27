@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { readControlPlaneAppConfig } from './config.js';
+import { parsePullRequestCiRepairLimit, readControlPlaneAppConfig } from './config.js';
 
 describe('readControlPlaneAppConfig', () => {
   it('reads port, database path, bearer token, and master secret from environment variables', () => {
@@ -608,5 +608,16 @@ describe('readControlPlaneAppConfig', () => {
         readControlPlaneAppConfig(['--client-dir', '   '], { ...baseEnv })
       ).toThrow('Client directory must be non-empty when configured.');
     });
+  });
+});
+
+describe('CI repair admission limit', () => {
+  it('defaults to two and accepts zero and positive safe integers', () => {
+    expect(parsePullRequestCiRepairLimit(undefined)).toBe(2);
+    expect(parsePullRequestCiRepairLimit('0')).toBe(0);
+    expect(parsePullRequestCiRepairLimit('13')).toBe(13);
+  });
+  it.each(['', '-1', '1.1', '1e3', 'Infinity', '9007199254740992'])('rejects %j', input => {
+    expect(() => parsePullRequestCiRepairLimit(input)).toThrow('nonnegative safe integer');
   });
 });

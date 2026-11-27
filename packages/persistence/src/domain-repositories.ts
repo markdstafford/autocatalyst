@@ -1,7 +1,7 @@
 import { rowToRecord } from './configuration-record-repository.js';
 import { randomUUID } from 'node:crypto';
 
-import { and, asc, count, desc, eq, inArray, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type {
@@ -205,7 +205,7 @@ function requireParent(rows: unknown[], parentId: string, parentName: string): v
 type DrizzleDb = ReturnType<typeof asInternalSqliteDatabase>['drizzle'];
 type DrizzleTx = Parameters<Parameters<DrizzleDb['transaction']>[0]>[0];
 
-function buildRunStepInsideTransaction(
+export function buildRunStepInsideTransaction(
   tx: DrizzleTx,
   runId: string,
   input: LifecycleRunStepInput,
@@ -896,6 +896,16 @@ export class DrizzleRunRepository implements RunRepository {
             .run();
         }
       }
+      if (input.publicationProvenance !== undefined) {
+        const { pullRequestId, headSha } = input.publicationProvenance;
+        if (input.currentStep !== 'pr.human_review' || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(headSha)) {
+          throw new Error('Invalid PR publication transition.');
+        }
+        const result = tx.update(pullRequests).set({ autocatalystHeadSha: headSha })
+          .where(and(eq(pullRequests.id, pullRequestId), eq(pullRequests.runId, run.id),
+            eq(pullRequests.tenant, run.tenant), eq(pullRequests.state, 'open'))).run();
+        if (result.changes !== 1) throw new Error('PR publication binding changed.');
+      }
       const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep, input.destinationCheckpointResult);
       return { run, runStep };
     });
@@ -1455,7 +1465,9 @@ export class DrizzlePullRequestRepository implements PullRequestRepository {
     const rows = this.#database.drizzle
       .select()
       .from(pullRequests)
-      .where(and(eq(pullRequests.tenant, input.tenant), eq(pullRequests.state, 'open')))
+      .where(and(eq(pullRequests.tenant, input.tenant), eq(pullRequests.state, 'open'),
+        input.after === undefined ? undefined : or(gt(pullRequests.createdAt, input.after.createdAt),
+          and(eq(pullRequests.createdAt, input.after.createdAt), gt(pullRequests.id, input.after.id)))))
       .orderBy(asc(pullRequests.createdAt), asc(pullRequests.id))
       .limit(input.limit)
       .all();

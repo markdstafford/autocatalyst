@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readFile, writeFile } from 'node:fs/promises';
 
 import { GhExecError, type GhExecInput, type GhExecResult } from '@autocatalyst/github-issue-tracker-adapter';
@@ -108,15 +110,20 @@ async function allocatePullRequestNumber(paths: FakeStatePaths): Promise<number>
   return current;
 }
 
-function pullRequestJson(record: PullRequestRecord, state: string): string {
+async function pullRequestFacts(paths: FakeStatePaths, repo: string, record: PullRequestRecord, state: string) {
+  const headRefOid = await promisify(execFile)('git', ['--git-dir', paths.fixtureRemote, 'rev-parse', '--verify', `refs/heads/${record.branch}`])
+    .then(result => result.stdout.trim(), () => undefined);
+  const [login, name] = repo.split('/');
+
   const upper = state.toUpperCase();
-  return JSON.stringify({
+  return {
     number: record.number,
     url: record.url,
     state: upper,
     headRefName: record.branch,
-    mergedAt: state === 'merged' ? '2026-01-01T00:00:00Z' : null
-  });
+    mergedAt: state === 'merged' ? '2026-01-01T00:00:00Z' : null,
+    headRefOid, baseRefName: 'main', headRepositoryOwner: { login }, headRepository: { name }
+  };
 }
 
 async function listPullRequestRecords(paths: FakeStatePaths): Promise<PullRequestRecord[]> {
@@ -172,7 +179,7 @@ export function createScriptedCodeHostExecuteGh(paths: FakeStatePaths): ExecuteG
         throw new GhExecError('gh_resource_not_found', `Fixture pull request ${number} not found.`);
       }
       const state = await readPullRequestState(paths, number);
-      return ok(pullRequestJson(record, state));
+      return ok(JSON.stringify(await pullRequestFacts(paths, repo, record, state)));
     }
 
     if (args[1] === 'list') {
@@ -180,16 +187,7 @@ export function createScriptedCodeHostExecuteGh(paths: FakeStatePaths): ExecuteG
       const records = await listPullRequestRecords(paths);
       const filtered = headBranch !== undefined ? records.filter((record) => record.branch === headBranch) : records;
       const withState = await Promise.all(
-        filtered.map(async (record) => {
-          const state = (await readPullRequestState(paths, record.number)).toUpperCase();
-          return {
-            number: record.number,
-            url: record.url,
-            state,
-            headRefName: record.branch,
-            mergedAt: state === 'MERGED' ? '2026-01-01T00:00:00Z' : null
-          };
-        })
+        filtered.map(async (record) => pullRequestFacts(paths, repo, record, await readPullRequestState(paths, record.number)))
       );
       return ok(JSON.stringify(withState));
     }

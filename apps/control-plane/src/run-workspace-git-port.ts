@@ -77,7 +77,7 @@ function validateDiffRef(ref: string | undefined): void {
 }
 
 function normalizeDiffPath(raw: string): string {
-  const normalized = raw.replace(/\\/gu, '/').trim();
+  const normalized = raw.replace(/\\/gu, '/');
   if (normalized.length === 0 || normalized.startsWith('/')) {
     throw new Error('changed_files_path_invalid');
   }
@@ -109,8 +109,13 @@ export function createRunWorkspaceGitPort(options: RunWorkspaceGitPortOptions): 
         return { commitSha: null, changedFileCount: 0, changedFilePaths: [] };
       }
 
-      await execFileAsync('git', ['add', '--all'], { cwd: input.workspaceRepoRoot });
-      await execFileAsync('git', ['commit', '-m', input.message], { cwd: input.workspaceRepoRoot });
+      if (input.onlyPath === undefined) {
+        await execFileAsync('git', ['add', '--all'], { cwd: input.workspaceRepoRoot });
+        await execFileAsync('git', ['commit', '-m', input.message], { cwd: input.workspaceRepoRoot });
+      } else {
+        validatePath(input.onlyPath);
+        await execFileAsync('git', ['--literal-pathspecs', '-c', 'core.hooksPath=/dev/null', 'commit', '--only', '-m', input.message, '--', input.onlyPath], { cwd: input.workspaceRepoRoot });
+      }
       const { stdout: sha } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: input.workspaceRepoRoot });
       const commitSha = sha.trim();
 
@@ -167,34 +172,24 @@ export function createRunWorkspaceGitPort(options: RunWorkspaceGitPortOptions): 
       const head = input.headRef ?? 'HEAD';
       const { stdout } = await execFileAsync(
         'git',
-        ['diff', '--name-status', '--find-renames', input.baseRef, head],
+        ['diff', '--name-status', '--find-renames', '-z', input.baseRef, head, '--'],
         { cwd: input.workspaceRepoRoot }
       );
 
       const entries = new Map<string, ChangedFileEntry>();
-      for (const line of stdout.trim().split('\n').filter(Boolean)) {
-        const parts = line.split('\t');
-        const statusChar = parts[0]?.[0];
+      const fields = stdout.split('\0');
+      for (let index = 0; index < fields.length - 1;) {
+        const status = fields[index++]?.[0];
+        const first = normalizeDiffPath(fields[index++] ?? '');
         let entry: ChangedFileEntry | null = null;
-
-        if (statusChar === 'A') {
-          const path = normalizeDiffPath(parts[1] ?? '');
-          entry = { path, status: 'added' };
-        } else if (statusChar === 'M' || statusChar === 'T') {
-          const path = normalizeDiffPath(parts[1] ?? '');
-          entry = { path, status: 'modified' };
-        } else if (statusChar === 'D') {
-          const path = normalizeDiffPath(parts[1] ?? '');
-          entry = { path, status: 'deleted' };
-        } else if (statusChar === 'R') {
-          const previousPath = normalizeDiffPath(parts[1] ?? '');
-          const path = normalizeDiffPath(parts[2] ?? '');
-          entry = { path, status: 'renamed', previousPath };
+        if (status === 'A') entry = { path: first, status: 'added' };
+        else if (status === 'M' || status === 'T') entry = { path: first, status: 'modified' };
+        else if (status === 'D') entry = { path: first, status: 'deleted' };
+        else if (status === 'R' || status === 'C') {
+          const path = normalizeDiffPath(fields[index++] ?? '');
+          entry = status === 'R' ? { path, status: 'renamed', previousPath: first } : { path, status: 'added' };
         }
-
-        if (entry !== null) {
-          entries.set(entry.path, entry);
-        }
+        if (entry !== null) entries.set(entry.path, entry);
       }
 
       return [...entries.values()].sort((a, b) => a.path.localeCompare(b.path));

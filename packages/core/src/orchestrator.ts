@@ -1,3 +1,8 @@
+import { convergenceCheckpointSchema } from '@autocatalyst/api-contract';
+import { randomUUID } from 'node:crypto';
+import { findCurrentRepair, type RepairDecision, type RepairMove, type RepairRepository } from './pr-ci-repair.js';
+import { executeRepair, recoverRepairAttempt, repairTerminalMove, type RepairWorkerDependencies } from './pr-repair-worker.js';
+import { readPullRequest } from './pr-lifecycle.js';
 import type { Feedback } from '@autocatalyst/api-contract';
 import { eligibleSpecFinding, publicSpecCheckpoint, type SpecQuestionPause } from './spec-convergence.js';
 import type {
@@ -56,6 +61,7 @@ import type { ResolveCodeHostCredential } from './code-host.js';
 import type { CodeHostRegistry } from './code-host-registry.js';
 import type { RunWorkspaceGitPort } from './run-workspace-git.js';
 import { handlePullRequestOpen } from './pr-open-handler.js';
+import { initialPullRequestBase, publicationEpoch, resolvePublicationBinding, type PublicationGitPort } from './pr-publication.js';
 import { buildCumulativeImplementationSummary, buildImplementationSummaryRoundInputs } from './implementation-summary.js';
 import {
   detectPullRequestMerges,
@@ -176,6 +182,9 @@ export interface ApplyOrchestratedDirectiveInput {
   readonly principal?: NonModelPrincipal;
   readonly reason?: string;
   readonly origin?: 'runner' | 'human' | 'system';
+  readonly refreshPublication?: true;
+  readonly expectedStepId?: string;
+  readonly publicationProvenance?: { readonly pullRequestId: string; readonly headSha: string };
 }
 
 export interface DispatchRunInput {
@@ -234,7 +243,8 @@ export interface Orchestrator {
   dispatch(input: DispatchRunInput): Promise<OrchestratedRunResult>;
   tick(input: TickInput): Promise<TickResult>;
   replyToRun(input: ReplyToRunInput): Promise<ReplyToRunResult>;
-  detectMerges(tenant: string): Promise<PullRequestStatusReconciliationResult>;
+  workspaceHeld?(input: DispatchRunInput): Promise<boolean>;
+  detectMerges(tenant: string, admitCiRepair?: boolean): Promise<PullRequestStatusReconciliationResult>;
   refreshRunPullRequest(input: DispatchRunInput): Promise<RefreshPullRequestOutcome>;
   /** Serialize the repository's failed-only reopen, without admitting the run for dispatch. */
   reopenFailedRun(input: RecoverFailedRunInput, tenant: string): Promise<RecoverFailedRunResult>;
@@ -271,7 +281,7 @@ export interface DefaultOrchestratorOptions {
   readonly clock?: () => string;
   readonly eventIdGenerator?: () => string;
   readonly isActiveRunConflict?: (error: unknown) => boolean;
-  readonly logger?: { warn(message: string, details?: unknown): void };
+  readonly logger?: { warn(message: string, details?: unknown): void; info?(message: string, details?: unknown): void };
   readonly specAuthoringDependencies?: SpecAuthoringServiceDependencies;
   readonly resolveWorkspaceContext?: WorkspaceContextResolver;
   readonly runWorkspaceMetadata?: RunWorkspaceMetadataRepository;
@@ -296,6 +306,10 @@ export interface PullRequestOpenWiringDependencies {
   readonly codeHosts: CodeHostRegistry;
   readonly resolveCredential: ResolveCodeHostCredential;
   readonly runWorkspaceGit?: Pick<RunWorkspaceGitPort, 'getChangedFiles'>;
+  readonly publicationGit?: PublicationGitPort;
+  readonly publicationRemoteOverride?: string;
+  readonly repair?: { readonly repository: RepairRepository; readonly limit: number };
+
 }
 
 function isWorkflowResolutionFailure(error: unknown): boolean {
@@ -326,7 +340,7 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #clock: (() => string) | undefined;
   readonly #eventIdGenerator: (() => string) | undefined;
   readonly #isActiveRunConflict: (error: unknown) => boolean;
-  readonly #logger: { warn(message: string, details?: unknown): void } | undefined;
+  readonly #logger: { warn(message: string, details?: unknown): void; info?(message: string, details?: unknown): void } | undefined;
   readonly #specAuthoringDependencies: SpecAuthoringServiceDependencies | undefined;
   readonly #resolveWorkspaceContext: WorkspaceContextResolver | undefined;
   readonly #runWorkspaceMetadata: RunWorkspaceMetadataRepository | undefined;
@@ -339,6 +353,9 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #specFreezeDependencies: SpecFreezeDependencies | undefined;
   readonly #runSteps: RunStepRepository | undefined;
   readonly #convergenceEngine: ConvergenceEngine | undefined;
+  readonly #repairEpoch = randomUUID();
+  readonly #repairWakeups = new Set<string>();
+  readonly #batchCursor = new Map<string, { createdAt: string; id: string }>();
   readonly #pullRequestOpenDependencies: PullRequestOpenWiringDependencies | undefined;
   readonly #autoDispatchEnabled: boolean;
   readonly #autoDispatchInFlightRunIds = new Set<string>();
@@ -580,11 +597,46 @@ export class DefaultOrchestrator implements Orchestrator {
       throw new OrchestratorError('terminal_run', `Run '${input.runId}' is terminal.`);
     }
     const fromStep = existing.currentStep;
+    const repairRepository = this.#pullRequestOpenDependencies?.repair?.repository;
+    if (repairRepository !== undefined && (fromStep === 'implementation.build' || fromStep === 'implementation.awaiting_input' ||
+        fromStep === 'pr.finalize' || fromStep === 'pr.human_review')) {
+      const repairs = await repairRepository.listByRun(input.runId, input.tenant);
+      const repair = findCurrentRepair(repairs);
+      if (repair !== undefined) {
+        if (input.directive !== 'cancel') throw new OrchestratorError('invalid_transition', 'The repair owns the current occurrence.');
+        const moved = await this.#moveRepair({
+          from: repair, state: 'superseded', nextStep: 'canceled', now: this.#repairClock(), stopCode: 'repair_canceled',
+          ...(repair.ownerEpoch !== null ? { hold: true } : {})
+        });
+        if (moved?.transition === undefined) throw new OrchestratorError('invalid_transition', 'The repair occurrence changed.');
+        return moved.transition;
+      }
+      if (repairs.some(row => row.workspaceHold) && fromStep !== 'pr.human_review') {
+        throw new OrchestratorError('invalid_transition', 'The run workspace is held for host inspection.');
+      }
+    }
+
+    if (input.expectedStepId !== undefined &&
+        (await this.#runs.findLatestOpenRunStep?.({ runId: input.runId, step: fromStep }))?.id !== input.expectedStepId) {
+      throw new OrchestratorError('invalid_transition', 'The run step occurrence changed.');
+    }
+    if ((input.refreshPublication || input.publicationProvenance !== undefined) && input.origin !== 'system') {
+      throw new OrchestratorError('invalid_transition', 'Only the host can authorize a publication transition.');
+    }
     const normalizedFailureReason = input.directive === 'fail'
       ? normalizeFailureReasonForPublicSurface(input.reason)
       : undefined;
 
     const origin = input.origin ?? 'runner';
+    const checkpoint = input.checkpointResult;
+    if (origin === 'system' && (fromStep === 'pr.finalize' || fromStep === 'pr.open') &&
+        checkpoint !== null && typeof checkpoint === 'object' && !Array.isArray(checkpoint) &&
+        'kind' in checkpoint && checkpoint.kind === 'publication_stop' && 'code' in checkpoint) {
+      this.#logger?.warn('PR publication stopped or invalidated.', {
+        event: checkpoint.code, runId: input.runId, step: fromStep,
+        refreshCount: 'refreshCount' in checkpoint ? checkpoint.refreshCount : undefined
+      });
+    }
 
     // Defense-in-depth: block any advance directive from runner origin when run is at a human gate.
     // Both spec.human_review and implementation.human_review are caught by this guard via
@@ -676,6 +728,8 @@ export class DefaultOrchestrator implements Orchestrator {
         workflowResolver: this.#workflowResolver,
         runId: input.runId,
         directive: input.directive,
+        ...(input.refreshPublication ? { refreshPublication: true } : {}),
+        ...(input.publicationProvenance !== undefined ? { publicationProvenance: input.publicationProvenance } : {}),
         ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {}),
         ...(input.destinationCheckpointResult !== undefined ? { destinationCheckpointResult: input.destinationCheckpointResult } : {}),
         ...(normalizedFailureReason !== undefined ? { reason: normalizedFailureReason } : {}),
@@ -714,6 +768,22 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     if (run.terminal) {
       throw new OrchestratorError('terminal_run', `Run '${input.runId}' is terminal.`);
+    }
+
+    const repairs = await this.#pullRequestOpenDependencies?.repair?.repository.listByRun(run.id, run.tenant) ?? [];
+    if (repairs.some(row => row.workspaceHold)) {
+      throw new OrchestratorError('invalid_transition', 'The run workspace is held for host inspection.');
+    }
+    const repair = findCurrentRepair(repairs);
+    if (repair !== undefined) {
+      return this.#dispatchQueue.enqueueForRun(run.id, async () => {
+        const current = findCurrentRepair(await this.#pullRequestOpenDependencies!.repair!.repository.listByRun(run.id, run.tenant));
+        const step = current?.currentStepId == null ? null : await this.#runSteps?.findById(current.currentStepId);
+        if (current?.state !== 'queued' || step == null || step.id !== repair.currentStepId || step.endedAt !== null) {
+          throw new OrchestratorError('invalid_transition', 'The repair occurrence is no longer queued.');
+        }
+        return executeRepair({ run, runStep: step }, current, this.#repairWorker());
+      });
     }
 
     const stepDefinition = getRunStepDefinition(run.currentStep);
@@ -900,6 +970,48 @@ export class DefaultOrchestrator implements Orchestrator {
     const unitOfWork = this.#unitOfWork;
 
     return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
+      const prDeps = this.#pullRequestOpenDependencies;
+      const publication = run.currentStep === 'pr.finalize' ? prDeps?.publicationGit : undefined;
+      let integrated: { workspace: Awaited<ReturnType<typeof resolvePublicationBinding>>['workspace']; sourceSha: string; targetSha: string; headSha: string } | undefined;
+      let finalizationStepId: string | undefined;
+      let epoch = { count: 0, sourcePushed: false };
+      const publicationStop = (code: string, details: Record<string, JsonValue> = {}) => this.applyDirective({
+        runId: run.id, tenant: run.tenant, origin: 'system', directive: 'fail', reason: code,
+        ...(finalizationStepId !== undefined ? { expectedStepId: finalizationStepId } : {}),
+        checkpointResult: {
+          kind: 'publication_stop', code, base: initialPullRequestBase,
+          timestamp: (this.#clock ?? (() => new Date().toISOString()))(),
+          refreshCount: epoch.count, sourcePushed: epoch.sourcePushed, ...details
+        }
+      });
+      if (publication !== undefined && prDeps !== undefined && this.#runWorkspaceMetadata !== undefined) {
+        const current = await this.#runs.findLatestOpenRunStep?.({ runId: run.id, step: 'pr.finalize' });
+        if (current == null) throw new OrchestratorError('invalid_transition', 'Finalization occurrence changed.');
+        finalizationStepId = current.id;
+        epoch = publicationEpoch(await this.#runSteps!.listByRun(run.id));
+        let binding;
+        try {
+          binding = await resolvePublicationBinding(run, { ...prDeps, runWorkspaceMetadata: this.#runWorkspaceMetadata });
+        } catch {
+          return publicationStop('pr_target_verification_failed', { safeReason: 'binding_unavailable' });
+        }
+        const { workspace } = binding;
+        const evidence = { branch: workspace.branch, repository: workspace.repository };
+        const integration = await publication.integrate(workspace);
+        switch (integration.kind) {
+          case 'target_unverified':
+            return publicationStop('pr_target_verification_failed', { ...evidence, safeReason: 'target_unavailable', sourceSha: integration.sourceSha ?? null });
+          case 'workspace_unavailable':
+            return publicationStop('pr_integration_workspace_unavailable', { ...evidence, safeReason: 'workspace_not_ready' });
+          case 'conflict':
+            return publicationStop('pr_integration_conflict', {
+              ...evidence, sourceSha: integration.sourceSha, targetSha: integration.targetSha,
+              paths: [...integration.paths], cleanup: integration.cleanup
+            });
+          case 'integrated':
+            integrated = { workspace, ...integration };
+        }
+      }
       const baseWorkInput: RunWorkInput = { runId: input.runId, run, tenant: input.tenant };
       const workInput: RunWorkInput = run.currentStep === 'pr.finalize'
         ? { ...baseWorkInput, toolPolicyMode: 'read_only' } as unknown as RunWorkInput
@@ -969,6 +1081,15 @@ export class DefaultOrchestrator implements Orchestrator {
         // (feature/enhancement) carry a spec artifact; other workflows skip the freeze.
         // Freeze failure becomes a `fail` directive with reason `spec_freeze_failed` so the
         // run never advances to pr.open with an unfrozen spec.
+        let publishSha = integrated?.headSha;
+        const invalidateCandidate = () => this.applyDirective({
+          runId: run.id, tenant: run.tenant, origin: 'system', directive: 'advance',
+          ...(finalizationStepId !== undefined ? { expectedStepId: finalizationStepId } : {}),
+          checkpointResult: { kind: 'publication_candidate_invalidated' }
+        });
+        if (integrated !== undefined && await publication?.readCandidate(integrated.workspace) !== integrated.headSha) {
+          return invalidateCandidate();
+        }
         const isSpecBearingWorkflow = run.workKind === 'feature' || run.workKind === 'enhancement';
         if (isSpecBearingWorkflow && this.#specFreezeDependencies !== undefined) {
           if (this.#resolveWorkspaceContext === undefined) {
@@ -995,10 +1116,16 @@ export class DefaultOrchestrator implements Orchestrator {
             });
           }
           try {
-            await this.#freezeRunSpecForPullRequest(
+            const freeze = await this.#freezeRunSpecForPullRequest(
               { run, workspaceRepoRoot: workspaceContext.workspaceRepoRoot },
               this.#specFreezeDependencies
             );
+            if (integrated !== undefined) {
+              if (!await publication?.verifyFreeze(integrated.workspace, integrated.headSha, freeze)) {
+                return invalidateCandidate();
+              }
+              publishSha = freeze.commitSha ?? integrated.headSha;
+            }
           } catch (cause) {
             const safeCode = cause instanceof SpecFreezeError ? cause.code : 'spec_freeze_failed';
             this.#logger?.warn('Spec freeze failed before pr.open.', { runId: input.runId, code: safeCode, ...this.#safeCause(cause) });
@@ -1016,7 +1143,17 @@ export class DefaultOrchestrator implements Orchestrator {
           runId: input.runId,
           directive: 'advance',
           tenant: input.tenant,
-          checkpointResult: buildPullRequestFinalizeCheckpoint(parsed, this.#clock !== undefined ? { clock: this.#clock } : {}),
+          checkpointResult: {
+            ...buildPullRequestFinalizeCheckpoint(parsed, this.#clock !== undefined ? { clock: this.#clock } : {}) as Record<string, JsonValue>,
+            ...(integrated !== undefined && publishSha !== undefined ? {
+              attestation: {
+                repository: integrated.workspace.repository, branch: integrated.workspace.branch,
+                base: integrated.workspace.base, targetSha: integrated.targetSha, reviewedSha: integrated.headSha, publishSha
+              },
+              integration: { sourceSha: integrated.sourceSha, refreshCount: epoch.count }
+            } : {})
+          },
+          ...(finalizationStepId !== undefined ? { expectedStepId: finalizationStepId } : {}),
           origin: 'runner'
         });
       }
@@ -1089,12 +1226,26 @@ export class DefaultOrchestrator implements Orchestrator {
             events: this.#events,
             applyDirective: (directiveInput) => this.applyDirective(directiveInput),
             clock: this.#clock ?? (() => new Date().toISOString()),
-            runWorkspaceGit: prDeps.runWorkspaceGit ?? noopRunWorkspaceGit
+            runWorkspaceGit: prDeps.runWorkspaceGit ?? noopRunWorkspaceGit,
+            ...(prDeps.publicationGit !== undefined ? { publicationGit: prDeps.publicationGit } : {}),
+            ...(prDeps.publicationRemoteOverride !== undefined ? { publicationRemoteOverride: prDeps.publicationRemoteOverride } : {})
           });
         } catch (cause) {
           if (isWorkflowResolutionFailure(cause)) throw cause;
           const safeCode = (cause as { code?: string } | null)?.code;
           this.#logger?.warn('pr.open handler failed.', { runId: input.runId, code: safeCode, ...this.#safeCause(cause) });
+          if (prDeps.publicationGit !== undefined && (safeCode === 'missing_credential' || safeCode === 'missing_code_host_setting')) {
+            const history = await runSteps.listByRun(run.id);
+            const prior = publicationEpoch(history);
+            const step = history.find(row => row.step === 'pr.open' && row.endedAt === null);
+            if (step !== undefined) return this.applyDirective({
+              runId: run.id, tenant: run.tenant, origin: 'system', directive: 'fail',
+              expectedStepId: step.id, reason: 'pr_target_verification_failed', checkpointResult: {
+                kind: 'publication_stop', code: 'pr_target_verification_failed', timestamp: this.#repairClock(),
+                base: initialPullRequestBase, refreshCount: prior.count, sourcePushed: prior.sourcePushed, safeReason: 'binding_unavailable'
+              }
+            });
+          }
           return this.applyDirective({
             runId: input.runId,
             directive: 'fail',
@@ -1112,13 +1263,145 @@ export class DefaultOrchestrator implements Orchestrator {
     );
   }
 
+  #repairClock() { return (this.#clock ?? (() => new Date().toISOString()))(); }
+
+  async #moveRepair(input: RepairMove): ReturnType<RepairRepository['move']> {
+    const moved = await this.#pullRequestOpenDependencies?.repair?.repository.move(input) ?? null;
+    if (moved === null) return null;
+    const record = moved.decision;
+    this.#logger?.warn('CI repair transition.', {
+      event: record.stopCode ?? `repair_${record.state}`, runId: record.runId,
+      pullRequestId: record.pullRequestId, head: record.headSha, ordinal: record.ordinal, workspaceHold: record.workspaceHold
+    });
+    if (moved.transition !== undefined) {
+      const source = input.from.currentStepId === null ? null : await this.#runSteps?.findById(input.from.currentStepId);
+      await this.#publishEvent({
+        runId: record.runId, tenant: record.tenant,
+        directive: input.nextStep === 'canceled' ? 'cancel' : input.nextStep === 'failed' ? 'fail' :
+          input.nextStep === 'implementation.awaiting_input' ? 'needs_input' : 'advance',
+        ...(source != null ? { fromStep: source.step } : {}),
+        toStep: moved.transition.run.currentStep, run: moved.transition.run, runStep: moved.transition.runStep
+      });
+    }
+    return moved;
+  }
+
+  #repairWorker(): RepairWorkerDependencies {
+    const deps = this.#pullRequestOpenDependencies;
+    if (deps?.repair === undefined || deps.publicationGit === undefined || deps.runWorkspaceGit === undefined ||
+        this.#runWorkspaceMetadata === undefined) throw new OrchestratorError('invalid_transition', 'Repair dispatch is not available.');
+    const runWorkspaceMetadata = this.#runWorkspaceMetadata;
+    return {
+      repository: deps.repair.repository, epoch: this.#repairEpoch, git: deps.publicationGit, diff: deps.runWorkspaceGit,
+      clock: () => this.#repairClock(),
+      pullRequest: async run => {
+        const pr = await deps.pullRequests.findByRun(run.id);
+        return pr?.tenant === run.tenant ? pr : null;
+      },
+      workspace: async run => (await resolvePublicationBinding(run, { ...deps, runWorkspaceMetadata })).workspace,
+      observe: (run, pr, ci) => readPullRequest(run, pr, this.#pullRequestLifecycleDependencies(), true, Date.now() + 30_000, ci),
+      transition: input => this.#withRunMutation(input.from, () => this.#moveRepair(input)),
+      onWorkspaceDrained: run => this.#invalidateRepairActivity(run),
+      build: async (run, runStep, repair, stillOwns) => {
+        if (this.#convergenceEngine === undefined || this.#resolveWorkspaceContext === undefined) throw new Error('repair_build_not_configured');
+        const workflow = await this.#requireWorkflow({ kind: 'existing_run', run });
+        const marker = runStep.checkpointResult as { humanGuidance?: unknown; resumedFromAwaitingInputStepId?: string } | null;
+        const guidance = marker?.humanGuidance;
+        const history = marker?.resumedFromAwaitingInputStepId === undefined ? [] : await this.#runSteps?.listByRun(run.id) ?? [];
+        const pause = history.find(step => step.id === marker?.resumedFromAwaitingInputStepId && step.step === 'implementation.awaiting_input');
+        const previous = pause === undefined ? undefined : history.find(step =>
+          step.occurrence.index === pause.occurrence.index - 1 && step.step === 'implementation.build');
+        const checkpoint = convergenceCheckpointSchema.safeParse(previous?.checkpointResult);
+        return this.#convergenceEngine.run({
+          run, runId: run.id, tenant: run.tenant, runStep, workflow, stepDefinition: getRunStepDefinition('implementation.build')!,
+          workspace: await this.#resolveWorkspaceContext({ runId: run.id }),
+          ...(typeof guidance === 'string' ? { humanGuidance: guidance } : {}),
+          ciRepair: { failedHead: repair.headSha, failures: repair.failures }, stillOwns,
+          ...(checkpoint.success ? { priorCheckpoint: checkpoint.data } : {})
+        });
+      },
+      review: async run => {
+        if (this.#unitOfWork === undefined) throw new Error('repair_review_not_configured');
+        return this.#unitOfWork.run({ run, runId: run.id, tenant: run.tenant, toolPolicyMode: 'read_only' } as RunWorkInput);
+      }
+    };
+  }
+
+  async #invalidateRepairActivity(run: Run): Promise<void> {
+    try {
+      await this.#events.append({ scope: { runId: run.id, tenant: run.tenant }, event: {
+        id: `evt_${randomUUID()}`, runId: run.id, step: run.currentStep, importance: 'normal',
+        createdAt: this.#repairClock(), type: 'runner_step_checkpoint',
+        checkpoint: { durable: true, name: 'pr_ci_activity', data: {} }
+      } });
+    } catch { /* The durable decision is authoritative. */ }
+  }
+
+  #wakeRepair(run: Run, queuedStepId?: string): void {
+    void (async () => {
+      const stepId = queuedStepId ?? (await this.#runs.findLatestOpenRunStep?.({
+        runId: run.id, step: 'implementation.build'
+      }))?.id;
+      // A guidance reply can queue a different occurrence before the previous
+      // dispatch has returned. Deduplicate polling by occurrence, not by run.
+      if (stepId === undefined || this.#repairWakeups.has(stepId)) return;
+      this.#repairWakeups.add(stepId);
+      try {
+        await this.dispatch({ runId: run.id, tenant: run.tenant });
+      } finally {
+        this.#repairWakeups.delete(stepId);
+      }
+    })().catch(() => undefined);
+  }
+
+  async restoreRepairs(): Promise<void> {
+    const repository = this.#pullRequestOpenDependencies?.repair?.repository;
+    if (repository === undefined) return;
+    for (const repair of await repository.listRecoverable()) {
+      const run = await this.#runs.findById(repair.runId);
+      if (run === null || run.terminal || run.tenant !== repair.tenant) continue;
+      if (repair.state === 'queued') this.#wakeRepair(run, repair.currentStepId ?? undefined);
+      else if (repair.ownerEpoch !== this.#repairEpoch) {
+        try {
+          await recoverRepairAttempt(run, repair, this.#repairWorker());
+        } catch (error) {
+          this.#logger?.warn('CI repair recovery deferred.', { event: 'repair_recovery_deferred', runId: run.id, ...this.#safeCause(error) });
+        }
+      }
+    }
+  }
+
+  async workspaceHeld(input: DispatchRunInput): Promise<boolean> {
+    const rows = await this.#pullRequestOpenDependencies?.repair?.repository.listByRun(input.runId, input.tenant) ?? [];
+    return rows.some(row => row.workspaceHold);
+  }
+
   #pullRequestLifecycleDependencies(): RefreshPullRequestDependencies {
     const deps = this.#pullRequestOpenDependencies;
     if (deps === undefined) {
       throw new OrchestratorError('persistence_failed', 'Pull-request lifecycle dependencies are not configured.');
     }
+    const { repair, ...lifecycleDeps } = deps;
     return {
-      ...deps,
+      ...lifecycleDeps,
+      ...(repair !== undefined ? { batchCursor: this.#batchCursor, repair: {
+        ...repair,
+        wake: (run: Run) => this.#wakeRepair(run),
+        diagnostic: (event: string, fields: Record<string, unknown>) => this.#logger?.warn('CI repair observation.', { event, ...fields }),
+        onTerminal: async (attempt: RepairDecision, state: 'merged' | 'closed') =>
+          await this.#moveRepair(repairTerminalMove(attempt, state, this.#repairClock())) !== null,
+        onDecision: async (run: Run, decision: RepairDecision, transition?: OrchestratedRunResult) => {
+          this.#logger?.warn('CI repair admission decision.', {
+            event: decision.stopCode ?? 'repair_queued', runId: run.id, pullRequestId: decision.pullRequestId,
+            head: decision.headSha, ordinal: decision.ordinal, limit: decision.limitAtDecision
+          });
+          if (transition !== undefined) {
+            await this.#publishEvent({ runId: run.id, tenant: run.tenant, directive: 'revise',
+              fromStep: 'pr.human_review', toStep: transition.run.currentStep, run: transition.run, runStep: transition.runStep });
+            this.#wakeRepair(transition.run, transition.runStep.id);
+          } else await this.#invalidateRepairActivity(run);
+        }
+      } } : {}),
       runs: this.#runs,
       applyDirective: (input) => this.applyDirective(input),
       withRunMutation: (input, work) => this.#withRunMutation(input, work),
@@ -1126,11 +1409,16 @@ export class DefaultOrchestrator implements Orchestrator {
     };
   }
 
-  async detectMerges(tenant: string): Promise<PullRequestStatusReconciliationResult> {
-    return detectPullRequestMerges(
-      { tenant, maxCount: 50, timeoutMs: 30_000 },
+  async detectMerges(tenant: string, admitCiRepair = false): Promise<PullRequestStatusReconciliationResult> {
+    const started = Date.now();
+    const result = await detectPullRequestMerges(
+      { tenant, maxCount: 50, timeoutMs: 30_000, admitCiRepair },
       this.#pullRequestLifecycleDependencies()
     );
+    this.#logger?.info?.('PR reconciliation finished.', {
+      event: 'pr_reconciliation_completed', tenant, durationMs: Date.now() - started, ...result
+    });
+    return result;
   }
 
   async refreshRunPullRequest(input: DispatchRunInput): Promise<RefreshPullRequestOutcome> {
@@ -1336,6 +1624,28 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     if (this.#runSteps === undefined) {
       throw new OrchestratorError('persistence_failed', 'Run step repository required for awaiting-input replies.');
+    }
+    const repairRepository = this.#pullRequestOpenDependencies?.repair?.repository;
+    if (repairRepository !== undefined) {
+      const repair = findCurrentRepair(await repairRepository.listByRun(input.runId, input.tenant));
+      if (repair !== undefined) {
+        const body = input.request.body;
+        if (input.principal.kind !== 'human' || repair.state !== 'awaiting_human' ||
+            input.request.pauseStepId === undefined || input.request.pauseStepId !== repair.currentStepId) {
+          throw new OrchestratorError('invalid_transition', 'The repair guidance reply is stale or unauthorized.');
+        }
+        const pause = await getConvergenceEscalationPause(
+          { run: input.run, expectedStepId: 'implementation.awaiting_input' }, { runSteps: this.#runSteps });
+        if (pause.runStep.id !== repair.currentStepId) throw new OrchestratorError('invalid_transition', 'The repair pause changed.');
+        const moved = await this.#withRunMutation(input, () => this.#moveRepair({
+          from: repair, state: 'queued', now: this.#repairClock(), nextStep: 'implementation.build',
+          checkpoint: { pause: { ...pause.checkpoint.pause, humanGuidance: body } },
+          initialCheckpoint: { resumedFromAwaitingInputStepId: pause.runStep.id, humanGuidance: body }
+        }));
+        if (moved?.transition === undefined) throw new OrchestratorError('invalid_transition', 'The repair pause changed.');
+        this.#wakeRepair(moved.transition.run, moved.transition.runStep.id);
+        return { ...moved.transition, classification: { directive: 'advance', pauseKind: 'convergence_escalation' } };
+      }
     }
     let pause: { runStep: RunStep };
     try {

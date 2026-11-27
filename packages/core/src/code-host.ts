@@ -44,11 +44,15 @@ export interface CodeHostPullRequestFacts {
   readonly url: string;
   readonly state: PullRequestState;
   readonly branch: string;
+  readonly headSha?: string | undefined;
+  readonly headRepository?: string | undefined;
+  readonly baseBranch?: string | undefined;
 }
 
 export interface CreateCodeHostPullRequestInput {
   readonly target: CodeHostTarget;
   readonly workspaceRepoRoot: string;
+  readonly branchAlreadyPushed?: true;
   readonly branch: string;
   readonly baseBranch: string;
   readonly content: PullRequestContent;
@@ -56,6 +60,7 @@ export interface CreateCodeHostPullRequestInput {
 }
 
 export interface ReadCodeHostPullRequestInput {
+  readonly deadlineMs?: number;
   readonly target: CodeHostTarget;
   readonly number: number;
   readonly credential: CodeHostCredential;
@@ -87,7 +92,20 @@ export interface MergeCodeHostPullRequestInput {
   readonly strategy?: MergeStrategy;
 }
 
+export type RequiredCheckEvidence = Readonly<{ id: string; name: string } & (
+  | { kind: 'check_run'; conclusion: 'failure' | 'timed_out' | 'action_required' }
+  | { kind: 'legacy_status'; conclusion: 'failure' | 'error' }
+)>;
+
+export type CodeHostCiObservation = {
+  readonly facts: CodeHostPullRequestFacts;
+  /** null means the current head could not be verified, not a passing observation. */
+  readonly failures: readonly RequiredCheckEvidence[] | null;
+  readonly requiredPending?: boolean;
+};
+
 export interface CodeHostPort {
+  observeCi?(input: ReadCodeHostPullRequestInput & { readonly deadlineMs: number }): Promise<CodeHostCiObservation>;
   create(input: CreateCodeHostPullRequestInput): Promise<CodeHostPullRequestFacts>;
   read(input: ReadCodeHostPullRequestInput): Promise<CodeHostPullRequestFacts>;
   findByBranch(input: FindCodeHostPullRequestByBranchInput): Promise<CodeHostPullRequestFacts | null>;

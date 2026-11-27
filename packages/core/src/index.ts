@@ -395,3 +395,7 @@ export * from './pr-open-handler.js';
 export * from './pr-lifecycle.js';
 
 export * from './execution-session-recorder.js';
+
+export * from './pr-publication.js';
+export * from './pr-ci-repair.js';
+export * from './pr-system-activity.js';

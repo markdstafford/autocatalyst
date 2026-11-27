@@ -12,6 +12,12 @@ Last updated: 2026-11-24 (run progress and activity, #152; build-round component
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
 
+## Guarded PR publication and CI repair (#201)
+
+- `apps/control-plane/src/publication-git.ts` applies containment, clean/idle branch verification, pinned integration and host push guards. `packages/core/src/pr-publication.ts` defines binding, attestation, receipt and initial recovery rules; `orchestrator.ts` and `pr-open-handler.ts` apply them to existing workflow IDs.
+- `packages/github-code-host-adapter/src/github-required-checks.ts` validates complete exact-head evidence; `packages/core/src/pr-lifecycle.ts` bounds reconciliation and tenant-scoped admission. `pr-ci-repair.ts` defines decisions and occurrence ownership; `pr-repair-worker.ts` implements claim, guidance, final review and same-PR publication. `packages/persistence/src/pr-ci-repair-repository.ts` and migration 0012 own atomic state and provenance.
+- `packages/api-contract/src/run-system-activity.ts`, `packages/core/src/pr-system-activity.ts`, and `apps/web/src/runs/pr-system-activity.tsx` expose and display typed evidence without new routes or SSE event types. `use-run-detail.ts` selects the current durable guidance pause; `run-detail-pane.tsx` reuses one form for spec and CI repair guidance. See [PR publication and repair](pr-publication.md) for state and operator gotchas.
+
 ## Run progress and Activity (#152)
 
 - `apps/web/src/runs/use-run-detail.ts` owns one stream for the visible selection and one workflow read per selection. It shares attempts with the spec audit and sessions with Summary. Successful snapshots, cursor, and Activity buffer are held by authenticated connection and run ID; switching runs restores held values before new reads. Transition/recovery frames invalidate mutable reads through the existing trailing coalescer. Cursor loss clears only the cursor and resubscribes with retained replay.

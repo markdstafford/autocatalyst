@@ -1,3 +1,4 @@
+import { PrSystemActivity } from './pr-system-activity.js';
 import type { Run, Session } from '@autocatalyst/api-contract';
 import { CheckCircle2, ChevronRight, Circle, Hand, Loader2, MinusCircle, Square, XCircle } from 'lucide-react';
 import { useEffect, useId, useState } from 'react';
@@ -137,6 +138,7 @@ function AttemptRow({ row, now, current, buffer, recordedSessions, sessionsStatu
           ) : null}
         </>
       ) : <div className={lineClass}>{header}</div>}
+      {attempt ? <PrSystemActivity step={attempt} /> : null}
     </li>
   );
 }

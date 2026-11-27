@@ -39,6 +39,7 @@ export interface SpecFreezeResult {
   readonly artifactPath: string;
   readonly shippedAt: string;
   readonly commitSha: string | null;
+  readonly expectedContents?: string;
 }
 
 function expectedKindForRun(run: Run): 'feature_spec' | 'enhancement_spec' | null {
@@ -94,6 +95,12 @@ export async function freezeRunSpecForPullRequest(
 
   // Step 4: render updated frontmatter with shipped status.
   const shippedAt = clock();
+  if (existingFrontmatter.status === 'complete') {
+    if (artifact.cachedStatus !== 'published') {
+      await artifacts.updateCachedStatus({ artifactId: artifact.id, cachedStatus: 'published', updatedAt: shippedAt });
+    }
+    return { artifactPath: relativePath, shippedAt, commitSha: null };
+  }
   const today = shippedAt.slice(0, 10);
   const updatedFrontmatter = {
     ...existingFrontmatter,
@@ -124,7 +131,8 @@ export async function freezeRunSpecForPullRequest(
     const commitResult = await git.commitFiles({
       runId: run.id,
       workspaceRepoRoot,
-      message: `docs: freeze shipped spec ${slug}`
+      message: `docs: freeze shipped spec ${slug}`,
+      onlyPath: relativePath
     });
     commitSha = commitResult.commitSha;
   } catch (cause) {
@@ -145,6 +153,7 @@ export async function freezeRunSpecForPullRequest(
   return {
     artifactPath: relativePath,
     shippedAt,
-    commitSha
+    commitSha,
+    expectedContents: updatedContents
   };
 }
