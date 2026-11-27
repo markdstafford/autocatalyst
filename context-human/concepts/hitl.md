@@ -1,6 +1,6 @@
 ---
 created: 2026-06-06
-last_updated: 2026-06-07
+last_updated: 2026-11-27
 status: active
 roadmap: flow
 ---
@@ -11,7 +11,7 @@ The points where a run stops and hands control to a person, and what happens whe
 replies. This concept owns the **pause-and-resume semantics**: what each pause hands the person,
 which reply directives are valid in that pause, and the rule that a reply is classified into a
 directive and re-dispatches the run. It also owns the **recovery trigger** — the explicit operator
-action that brings a stopped run back into motion — and the **reply-to-a-stopped-run behavior**. It
+action that brings a failed run back into motion — and the **reply-to-a-stopped-run behavior**. It
 does not own where the human steps sit in a workflow or how a gate advances (see `workflow`), the
 converge-or-escalate loop that produces an escalation (see `review`), the step machine and the
 `next(...)` transition rule (see `run`), re-materializing the workspace (see `execution-runtime`),
@@ -73,13 +73,12 @@ run for an answer; the difference is the directive the reply reduces to, not the
 
 A run that has stopped — paused at a `human` step, or interrupted before reaching a terminal step —
 is preserved. A non-terminal run is kept on load, its conversation is re-registered, and the step at
-which it stopped is recorded (ADR-021). Nothing about it is dropped.
+which it stopped is recorded (ADR-021). The service does not re-dispatch it on load.
 
-Nothing re-dispatches on its own. A stopped run waits until a person acts on it. Recovery is an
-**explicit operator action** (`ac-run-recover`): it re-materializes the run's workspace and
-re-dispatches the run from the recorded step (see `execution-runtime` for the re-materialization,
-`orchestrator` for admitting the run back for dispatch). The run resumes from where it was, not from
-the beginning, because the recorded step is where it stopped.
+Recovery is an **explicit operator action** (`ac-run-recover`) available only for failed runs. An
+archived failed run must be unarchived first. Recovery re-materializes the workspace and dispatches
+the run according to the recovery policy (see `execution-runtime` for re-materialization and
+`orchestrator` for dispatch admission).
 
 Recovery can **resume or start over by choice**. By default it follows the recovery policy table
 (`run`): a spec-phase failure starts over on a fresh default branch, and an implementation/docs/pr
@@ -89,20 +88,15 @@ phase on a freshly fetched default branch.
 
 ## A reply to a stopped run
 
-A reply that arrives for a run that has already stopped — a `failed` or `canceled` run — is neither
-silently revived nor silently discarded. The person gets a clear response: this run is stopped, and
-here is how to recover it. The reply does not quietly turn a stopped run back on, and it does not
-vanish. Recovery stays the deliberate action that brings such a run back, so a stray reply cannot
-restart work that was stopped on purpose.
+A reply to a `failed` or `canceled` run returns a conflict and leaves the run unchanged. For a
+failed run, the response points the operator to recovery. A canceled run cannot be recovered.
 
-## Recovery versus the operator force
+## Recovery versus set step
 
-Two operator actions move a stopped run, and they are distinct. **Recovery** (`ac-run-recover`)
-resumes a run from the step it stopped at — it is the "this run was interrupted, bring it back where
-it was" action. **`set-step`** is an override: it forces a run to a step the operator chooses,
-regardless of where it stopped (see `orchestrator`). Recovery trusts the recorded step; `set-step`
-replaces it. Both re-materialize the workspace on dispatch, so the run resumes against a real
-workspace either way.
+**Recovery** applies only to failed runs. **Set step** (`set-step`) applies only to idle, unfinished
+runs. Its target must be earlier in workflow order and already reached by the run (see `commands`).
+If set step leaves an input pause, it abandons the request. The question stays in history, but the
+operator can no longer answer that request.
 
 Which states resume from their recorded step and which start over — for instance, a run that failed
 while authoring a spec versus one that failed mid-implementation — is the run's per-state recovery
@@ -119,7 +113,7 @@ policy, the recovery-policy table in `run`. This concept relies on that table; i
 - `intents` — classifies a human reply into the directive the transition rule acts on.
 - `orchestrator` — admits a stopped run back for dispatch and routes the operator actions
   (`ac-run-recover`, `set-step`).
-- `execution-runtime` — re-materializes the workspace when a recovered or force-set run dispatches.
+- `execution-runtime` — re-materializes the workspace when a recovered or repositioned run dispatches.
 - `feedback` — owns the items a person dispositions at a gate and the findings a reviewer raises in
   an escalation payload.
 
@@ -133,15 +127,13 @@ policy, the recovery-policy table in `run`. This concept relies on that table; i
   from that one property (ADR-015).
 - A non-terminal run is preserved on load and never dropped — its conversation re-registered, its
   stopped step recorded (ADR-021).
-- Recovery is an explicit operator action that re-materializes the workspace and re-dispatches from
-  the recorded step; it is distinct from the `set-step` operator force, which dispatches from an
-  operator-chosen step (ADR-021 for re-materialization).
-- A reply to a stopped run gets a clear recover-it response — never silent revival, never a dropped
-  reply.
+- Recovery is an explicit, failed-only action that re-materializes the workspace (ADR-021). Set
+  step moves only idle, unfinished runs to earlier, already-reached steps.
+- Replies to failed or canceled runs return a conflict. Only failed runs can be recovered.
 
 ## Open edges
 
-- **Automatic recovery on load.** Today a stopped run waits for the explicit recovery action. A
+- **Automatic recovery on load.** A failed run waits for the explicit recovery action. A
   later capability could re-dispatch a recoverable run on load without an operator triggering it;
   the recorded stopped step is what such automation would build on.
 - **An interactive credential prompt** (for example an SSO sign-in) is not expected. If one ever
