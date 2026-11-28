@@ -800,9 +800,10 @@ it('passes the same signal to the entry point and stops a blocked retry backoff'
   let release!: () => void;
   const sleeping = new Promise<void>(resolve => { entered = resolve; });
   const backoff = new Promise<void>(resolve => { release = resolve; });
-  const execute = vi.fn(async function* () { throw makeTransientPreTerminal(); });
+  const { entry } = makeSequencedEntryPoint([{ throw: makeTransientPreTerminal() }]);
+  const execute = vi.spyOn(entry, 'execute');
   const unit = createExecutionRunUnitOfWork({
-    execute: { execute }, resolveContext: async () => makeContext(),
+    execute: entry, resolveContext: async () => makeContext(),
     sleep() { entered(); return backoff; }
   });
   const result = unit.run(makeInput({ signal: cancel.signal }));

@@ -66,8 +66,9 @@ describe('reviewed invocation fallback', () => {
     }));
     const finish = vi.fn(async () => { controller.abort(); });
     const execute = vi.fn(async function* (input: ExecutionEntryPointInput) {
-      await input.prepareConversation?.(environment);
-      throw new NativeResumeRefused('missing', false);
+      const conversation = await input.prepareConversation?.(environment);
+      if (conversation?.mode === 'retained') throw new NativeResumeRefused('missing', false);
+      yield makeTerminalEvent('advance');
     });
     const uow = createExecutionRunUnitOfWork({
       reviewedAttempt: () => ({ prepare, finish }),

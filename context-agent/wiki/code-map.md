@@ -65,6 +65,7 @@ Last updated: 2026-11-27 (active dispatch cancellation, #154).
 - `runner-event-consumer.ts` treats the internal `cancelled` terminal as a discard, not SSE failure activity. The unit of work records a history row only when the terminal has launch metadata; `reviewed-conversation.ts` retires canceled custody without waiting for writer release. `pr-repair-worker.ts` keeps a host hold when this return does not prove the writer drained.
 - `claude-agent-adapter.ts` forwards its session signal to every launch and bridges fresh and retained queries to a query-local SDK controller. In-memory queries close on active-turn abort and survive ordinary completed turns. Codex still uses its existing launch and auth signals.
 - Focused HTTP coverage: `apps/control-plane/src/spec-convergence.integration.spec.ts` blocks each provider launch and awaits dispatch completion before releasing it. See [controller ownership](../decisions/dispatch-cancellation.md) and the [commands concept proposal](commands-cancel-proposal.md).
+- For unit-of-work cancellation during retry backoff, `execution-run-unit-of-work.session-persistence.spec.ts` uses `makeSequencedEntryPoint` to throw on stream consumption; a throw-only generator mock fails ESLint's `require-yield` rule.
 
 ## Run operator actions (#153)
 
