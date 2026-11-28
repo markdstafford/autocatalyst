@@ -16,8 +16,8 @@ export async function commitConvergenceEffect<T>(
 }
 
 /**
- * A canceled loop can still finish its rounds. Keep its uncommitted feedback in memory so
- * it can pass IDs and dispositions between its sessions without changing durable records.
+ * A dispatch can lose ownership during an in-flight round. Keep rejected feedback writes in
+ * memory so that round can unwind without mutating durable records.
  */
 export function guardConvergenceFeedback(repo: FeedbackRepository, guard?: CommitDispatchResult): FeedbackRepository {
   if (guard === undefined) return repo;

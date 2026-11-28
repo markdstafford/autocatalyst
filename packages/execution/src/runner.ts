@@ -31,6 +31,7 @@ export interface RunnerCloseResult {
 
 export interface RunnerRunInput {
   readonly environment: MaterializedExecutionEnvironment;
+  readonly signal?: AbortSignal;
   readonly correlationId?: string;
   readonly structuredResultCapture?: StructuredAgentResultCapture;
   readonly modelMemory?: AgentModelMemoryContinuity;
@@ -54,5 +55,7 @@ export interface RunnerSessionMetadata {
 export interface Runner {
   run(input: RunnerRunInput): AsyncIterable<RunnerEvent>;
   close(): Promise<RunnerCloseResult>;
+  /** Safe facts already available, without waiting for provider shutdown. */
+  snapshotSessionMetadata?(): RunnerSessionMetadata | null;
   getSessionMetadata?(): Promise<RunnerSessionMetadata | null>;
 }

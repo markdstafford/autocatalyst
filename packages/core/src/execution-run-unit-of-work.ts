@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as retryDelay } from 'node:timers/promises';
 import type { ExecutionContext, JsonValue, Principal } from '@autocatalyst/api-contract';
 import {
+  abortable,
   RunnerProtocolError,
   NativeResumeRefused,
   type NativeConversationTurn,
@@ -51,7 +53,7 @@ export interface SessionRetryPolicyOptions {
 export interface ReviewedAttemptPort {
   prepare(input: { attemptId: string; fallback: boolean; environment: MaterializedExecutionEnvironment; profile?: ResolvedAgentRunnerProfile }): Promise<NativeConversationTurn | undefined>;
   launched?(attemptId: string, launch: Pick<RunnerSessionMetadata, 'model' | 'inferenceSettings' | 'startedAt'>): void;
-  finish(input: { attemptId: string; accepted: boolean; checkpoint?: JsonValue; beforeLaunch?: boolean }): Promise<void>;
+  finish(input: { attemptId: string; accepted: boolean; checkpoint?: JsonValue; beforeLaunch?: boolean; signal?: AbortSignal }): Promise<void>;
   freshHandoff?: string;
 }
 
@@ -98,8 +100,6 @@ export interface ExecutionRunUnitOfWorkOptions {
 export const RUNNER_SESSION_MAX_RETRIES = 2;
 /** Base session-retry backoff, doubled per retry (2000 → 4000 …). */
 export const RUNNER_SESSION_RETRY_BASE_DELAY_MS = 2000;
-
-const defaultRetrySleep = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
  * Decide whether a caught dispatch error is a retryable pre-terminal transient session failure.
@@ -155,6 +155,7 @@ type SessionOutcomeKind = 'succeeded' | 'failed' | 'cancelled' | 'timeout' | 'ne
 
 function deriveAgentOutcome(workResult: RunWorkResult): SessionOutcomeKind {
   switch (workResult.directive) {
+    case 'cancelled': return 'cancelled';
     case 'advance': return 'succeeded';
     case 'needs_input': return 'needs_input';
     case 'fail': return 'failed';
@@ -172,10 +173,14 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       return inner.workResult;
     },
     async runWithCheckpoint(input: RunWorkInput): Promise<RecordedWork> {
+      const { signal } = input;
+      const cancelled = { workResult: { directive: 'cancelled' } } as const;
+      if (signal?.aborted) return cancelled;
       let context: ExecutionContext;
       try {
         context = await options.resolveContext(input);
       } catch (error) {
+        if (signal?.aborted) return cancelled;
         const reason = safeFailureReasonFromError(error);
         if (reason !== undefined) {
           return { workResult: { directive: 'fail' as const, reason } };
@@ -281,7 +286,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       // no new run-step occurrence is created, so convergence-round accounting is untouched.
       const maxSessionRetries = options.sessionRetry?.maxRetries ?? RUNNER_SESSION_MAX_RETRIES;
       const sessionRetryBaseDelayMs = options.sessionRetry?.baseDelayMs ?? RUNNER_SESSION_RETRY_BASE_DELAY_MS;
-      const sleep = options.sleep ?? defaultRetrySleep;
+      const sleep = options.sleep;
 
       // Record a durable failed session row from the cached pre-terminal metadata. Persistence
       // failures here are logged but must never replace the original sanitized terminal reason.
@@ -335,16 +340,19 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       const freshOnly = guideAuthor || input.run.currentStep === 'pr.finalize';
       let nativeMode: NativeConversationTurn['mode'] | undefined;
       const finish = async (accepted: boolean, checkpoint?: JsonValue, beforeLaunch?: boolean) => {
-        if (attemptId && reviewed) await reviewed.finish({ attemptId, accepted,
+        if (attemptId && reviewed) await reviewed.finish({ attemptId, accepted: accepted && !signal?.aborted,
+          ...(signal ? { signal } : {}),
           ...(checkpoint !== undefined ? { checkpoint } : {}), ...(beforeLaunch ? { beforeLaunch } : {}) }).catch(() => undefined);
       };
       // Bounded session-retry loop. Breaks out on a terminal result (advance/needs_input/fail) and
       // returns a fail directive when a transient session failure cannot be recovered.
       for (;;) {
+        if (signal?.aborted) return cancelled;
         attemptId = reviewed || freshOnly ? `sess_${randomUUID()}` : undefined;
         nativeMode = undefined;
         const id = attemptId;
         const events = options.execute.execute({ context, correlationId: input.runId,
+          ...(signal ? { signal } : {}),
           ...(id ? { attemptId: id } : {}),
           ...(reviewed && id ? {
             ...(reviewed.freshHandoff ? { freshHandoff: reviewed.freshHandoff } : {}),
@@ -381,6 +389,10 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
           });
           break;
         } catch (error) {
+          if (signal?.aborted) {
+            await finish(false);
+            return cancelled;
+          }
           if (error instanceof RunnerProtocolError) {
             await finish(false);
             throw error;
@@ -403,6 +415,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
             await recordPreTerminalFailedSession(preTerminalMeta, attemptId);
           }
           await finish(false, undefined, refusal?.launched === false);
+          if (signal?.aborted) return cancelled;
           if (refusal && (nativeMode === 'retained' || nativeMode === 'in_memory') && !fallback &&
               !(await options.isRunCanceled?.(input.runId))) {
             fallback = true;
@@ -425,7 +438,13 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
             }
             const delayMs = sessionRetryBaseDelayMs * Math.pow(2, retriesUsed);
             retriesUsed += 1;
-            await sleep(delayMs);
+            try {
+              if (sleep) await abortable(signal, () => sleep(delayMs));
+              else await retryDelay(delayMs, undefined, { signal });
+            } catch (error) {
+              if (signal?.aborted) return cancelled;
+              throw error;
+            }
             continue;
           }
 
@@ -470,7 +489,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
             // For fail results: log safely and preserve the original reason.
             if (consumeResult.workResult.directive === 'advance' || consumeResult.workResult.directive === 'needs_input') {
               await finish(false);
-              return { workResult: { directive: 'fail' as const, reason: 'session_persistence_failed' } };
+              return signal?.aborted ? cancelled : { workResult: { directive: 'fail' as const, reason: 'session_persistence_failed' } };
             }
             // fail result: log and keep original
             options.logger?.error(

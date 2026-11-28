@@ -650,6 +650,27 @@ describe('createDelegatingExecutionEntryPoint — role routing', () => {
     };
   }
 
+  it.each(['before factory', 'during factory'])('does not materialize or launch on cancellation %s', async when => {
+    const controller = new AbortController();
+    const runner = { run: vi.fn(), close: vi.fn().mockResolvedValue({ status: 'closed' }) };
+    const factory = { createRunner: vi.fn(async () => {
+      controller.abort();
+      return runner;
+    }) };
+    const materialize = vi.fn();
+    const entryPoint = createDelegatingExecutionEntryPoint({ factory, materialize });
+    if (when === 'before factory') controller.abort();
+    const events = [];
+    for await (const event of entryPoint.execute({ context: makeMinimalContext(), signal: controller.signal })) events.push(event);
+    expect(events).toEqual([expect.objectContaining({ type: 'runner_terminal_result', outcome: 'cancelled' })]);
+    expect(events[0]).not.toHaveProperty('sessionMetadata');
+    const allocated = when === 'during factory' ? 1 : 0;
+    expect(factory.createRunner).toHaveBeenCalledTimes(allocated);
+    expect(runner.close).toHaveBeenCalledTimes(allocated);
+    expect(runner.run).not.toHaveBeenCalled();
+    expect(materialize).not.toHaveBeenCalled();
+  });
+
   it.each(['feature', 'enhancement', 'bug', 'chore'])('selects the guide scratch contract for %s', workKind => {
     const base = makeMinimalContext('implementer');
     const config = resolveScratchResultValidationConfig({

@@ -12,14 +12,14 @@ export function reviewedSpecCompletionStub(
   feedback?: FeedbackLifecycleDependencies
 ): ConvergenceEngine {
   return {
-    run: input => unitOfWork.run(input).then(workResult => ({
+    run: input => unitOfWork.run(input).then(workResult => workResult.directive === 'cancelled' ? { cancelled: true, workResult } : ({
       workResult,
       checkpointResult: { kind: 'convergence_review', step: input.run.currentStep, maxRounds: 1,
         outcome: 'converged', rounds: [], openFeedbackIds: [], lastPositions: {}, routing: { distinct: false } }
     })),
     async runSpec(input) {
       const work = await unitOfWork.run(input);
-      if (work.directive === 'fail') return work;
+      if (work.directive === 'fail' || work.directive === 'cancelled') return work;
       if (work.directive !== 'advance') throw new Error('Unexpected pause in a legacy test harness.');
       const parsed = specAuthorResultSchema.safeParse(work.result);
       if (!parsed.success) return { directive: 'fail', reason: 'spec_author_result_invalid' };

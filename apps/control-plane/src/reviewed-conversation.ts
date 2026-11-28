@@ -10,7 +10,7 @@ import {
 import { codexAgentAdapterId, codexBusinessAdapterId, codexProviderKind } from '@autocatalyst/codex-agent-adapter';
 import { implementerDispositionsResultSchema } from '@autocatalyst/api-contract';
 import type { ReviewedAttemptPort, RunRoleWorkInput } from '@autocatalyst/core';
-import type { MaterializedExecutionEnvironment, NativeConversationTurn, ResolvedAgentRunnerProfile } from '@autocatalyst/execution';
+import { abortable, type MaterializedExecutionEnvironment, type NativeConversationTurn, type ResolvedAgentRunnerProfile } from '@autocatalyst/execution';
 import type {
   ConversationBinding, ConversationClaim, DrizzleAgentConversationRepository, ReviewedDispatchAttempt
 } from '@autocatalyst/persistence';
@@ -324,7 +324,7 @@ export function createReviewedAttemptPort(input: {
         catch { /* Recording continuity metadata must not stop an otherwise valid invocation. */ }
       }
     },
-    async finish({ attemptId, accepted, checkpoint, beforeLaunch }) {
+    async finish({ attemptId, accepted, checkpoint, beforeLaunch, signal }) {
       if (prepared?.id === attemptId) {
         if (beforeLaunch) input.repository.markFreshAfterPreflight(prepared);
         prepared = undefined;
@@ -333,19 +333,24 @@ export function createReviewedAttemptPort(input: {
         const pending = live;
         live = undefined;
         try {
-          pending.finish(accepted && (!occurrence.stillOwns || await occurrence.stillOwns()) && hasRequiredDispositions(checkpoint));
+          pending.finish(accepted && (!occurrence.stillOwns || await occurrence.stillOwns()) && hasRequiredDispositions(checkpoint) && !signal?.aborted);
         }
         finally { pending.finish(false); }
       }
       if (active?.attempt.id !== attemptId) return;
       const { attempt, claim, handle, storageScope, opened, launch } = active;
       active = undefined;
-      const writerReleased = !opened?.finish || await opened.finish().catch(() => false);
+      const releaseWriter = opened?.finish ? Promise.resolve().then(() => opened.finish!()).catch(() => false) : undefined;
+      const writerReleased = !releaseWriter || await abortable(signal, () => releaseWriter).catch(() => false);
+      if (signal?.aborted) {
+        input.repository.finish(attempt, claim);
+        return;
+      }
       const owned = !occurrence.stillOwns || await occurrence.stillOwns();
       const validDispositions = hasRequiredDispositions(checkpoint);
-      input.repository.finish(attempt, claim, accepted && owned && writerReleased && validDispositions && handle && storageScope
+      input.repository.finish(attempt, claim, accepted && !signal?.aborted && owned && writerReleased && validDispositions && handle && storageScope
         ? { handle, storageScope } : undefined);
-      if (owned) await launch.reconcile?.().catch(() => undefined);
+      if (owned && !signal?.aborted) await launch.reconcile?.().catch(() => undefined);
     }
   };
 }

@@ -5,7 +5,8 @@ import { dirname, join } from 'node:path';
 
 import type { FeedbackResponse, Run, RunStep, Session } from '@autocatalyst/api-contract';
 import { claudeAgentAdapterId, claudeProviderKind, createClaudeAgentAdapter } from '@autocatalyst/claude-agent-adapter';
-import { buildProviderAdapterKey } from '@autocatalyst/core';
+import { codexAgentAdapterId, codexProviderKind, createCodexAgentAdapter } from '@autocatalyst/codex-agent-adapter';
+import { buildProviderAdapterKey, type ControlPlaneService } from '@autocatalyst/core';
 import type { AgentProviderSessionInput } from '@autocatalyst/execution';
 import Database from 'better-sqlite3';
 import { expect, it, vi } from 'vitest';
@@ -14,6 +15,7 @@ import { FAKE_FIXTURE_PROJECT } from './fake/constants.js';
 import { ensureFakeState } from './fake/state-bootstrap.js';
 import { createControlPlaneServer } from './server.js';
 
+const principal = { id: 'operator', tenantId: 'tenant_dev', kind: 'human' } as const;
 const headers = { authorization: 'Bearer spec-convergence-test' };
 const specPath = 'context-human/specs/feature-reviewed-draft.md';
 const finding = (title: string, passageQuote?: string) => ({
@@ -42,9 +44,16 @@ type Launch = {
   prompt: string;
 };
 
-async function harness(script: (launch: Launch, previous: readonly Launch[]) => unknown) {
+async function harness(
+  script: (launch: Launch, previous: readonly Launch[], signal?: AbortSignal) => unknown | Promise<unknown>,
+  cancelProvider?: 'claude' | 'codex'
+) {
+  const codex = cancelProvider === 'codex';
+  const providerKind = codex ? codexProviderKind : claudeProviderKind;
+  const adapterId = codex ? codexAgentAdapterId : claudeAgentAdapterId;
   const paths = await ensureFakeState(await mkdtemp(join(tmpdir(), 'ac-spec-convergence-')));
   const options = { databasePath: paths.databasePath, bearerToken: 'spec-convergence-test',
+    ...(cancelProvider ? { resolvePrincipal: () => principal } : {}),
     masterSecret: 'spec-convergence-integration-secret',
     workspaceRoots: { reposRoot: paths.reposRoot, workspacesRoot: paths.workspacesRoot } };
   const bootstrap = await createControlPlaneServer({ ...options, autoDispatch: { enabled: false } });
@@ -56,9 +65,9 @@ async function harness(script: (launch: Launch, previous: readonly Launch[]) => 
     const profileIds: string[] = [];
     for (const model of Object.values(expectedModels)) {
       const profile = await bootstrap.inject({ method: 'POST', url: '/v1/configuration-records', headers, payload: {
-        kind: 'provider_profile', providerKind: claudeProviderKind, adapterId: claudeAgentAdapterId,
+        kind: 'provider_profile', providerKind, adapterId,
         settings: { profileName: model, credentialSecretHandle: secret.json().handle,
-          model: { provider: 'anthropic', model }, inferenceSettings: {}, endpoint: {} }
+          model: { provider: codex ? 'codex' : 'anthropic', model }, inferenceSettings: {}, endpoint: {} }
       } });
       expect(profile.statusCode).toBe(201);
       profileIds.push(profile.json().id);
@@ -84,14 +93,17 @@ async function harness(script: (launch: Launch, previous: readonly Launch[]) => 
   const launches: Launch[] = [];
   const failures: unknown[] = [];
   const telemetry: Record<string, unknown>[] = [];
-  const adapter = createClaudeAgentAdapter();
+  const adapter = codex ? createCodexAgentAdapter() : createClaudeAgentAdapter();
+  let service!: ControlPlaneService;
   const app = await createControlPlaneServer({
     ...options, realRunnerDispatch: { enabled: true },
+    ...(cancelProvider ? { autoDispatch: { enabled: false }, runConcurrency: 1 } : {}),
+    onControlPlaneReady(ready) { service = ready; },
     logger: { stream: { write(line: string) {
       const record = JSON.parse(line) as Record<string, unknown>;
-      if (record['component'] === 'spec-convergence') telemetry.push(record);
+      if (record['component'] === 'spec-convergence' || record['msg'] === 'dispatch_result_discarded') telemetry.push(record);
     } } },
-    providerAdapters: new Map([[buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId), () => ({
+    providerAdapters: new Map([[buildProviderAdapterKey(providerKind, adapterId), () => ({
       ...adapter,
       async startSession(input: AgentProviderSessionInput) {
         const env = input.runInput.environment;
@@ -105,6 +117,13 @@ async function harness(script: (launch: Launch, previous: readonly Launch[]) => 
           ...(candidatePath ? { candidatePath, candidate: await readFile(candidatePath, 'utf8') } : {})
         };
         launches.push(launch);
+        if (codex) return createCodexAgentAdapter({
+          probeCodexAuth: async () => ({ status: 'authenticated', accountType: 'business' }),
+          launchCodexSession: async function* (session) {
+            const result = await script(launch, launches, session.signal);
+            yield { type: 'result', structuredOutput: result, result: { directive: 'advance' } };
+          }
+        }).startSession(input);
         return createClaudeAgentAdapter({
           launchClaudeSession: async function* (session) {
             try {
@@ -114,7 +133,7 @@ async function harness(script: (launch: Launch, previous: readonly Launch[]) => 
                 expect(session.options?.['tools']).toEqual(['Read', 'Glob', 'Grep']);
                 expect(input.modelMemory).toBeUndefined();
               }
-              const result = script(launch, launches);
+              const result = await script(launch, launches, session.signal);
               yield { type: 'result', structuredOutput: { response: result },
                 result: { is_error: false, input_tokens: 1, output_tokens: 2 } };
             } catch (error) {
@@ -147,6 +166,8 @@ async function harness(script: (launch: Launch, previous: readonly Launch[]) => 
   return {
     paths, start, request, wait, git, launches, telemetry,
     get runId() { return runId; },
+    tick: () => service.tick({ runId, principal, tenant: principal.tenantId }),
+    replay: () => service.replayRunEvents({ runId, principal, tenant: principal.tenantId, replay: 'retained' }),
     async steps() { return (await request('GET', '/steps')).json().steps as RunStep[]; },
     async feedback() { return (await request('GET', '/feedback')).json().feedback as FeedbackResponse[]; },
     async close() { await app.close(); }
@@ -365,4 +386,59 @@ it('hands off at the default round cap and carries an open finding into a fresh,
     const second = (await runtime.steps()).find(step => step.step === 'spec.author' && step.id !== first.id)!;
     expect(second.checkpointResult).toMatchObject({ occurrenceId: second.id, outcome: 'converged' });
   } finally { await runtime.close(); }
+}, 15000);
+
+it.each(['claude', 'codex'] as const)('cancels an uncooperative %s author through the production HTTP route', async provider => {
+  let enter!: (signal: AbortSignal) => void;
+  let release!: () => void;
+  let late!: () => void;
+  const launched = new Promise<AbortSignal>(resolve => { enter = resolve; });
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const returningLateDraft = new Promise<void>(resolve => { late = resolve; });
+  const runtime = await harness(async (launch, _previous, signal) => {
+    expect(launch.role).toBe('implementer');
+    expect(signal).toBeInstanceOf(AbortSignal);
+    enter(signal!);
+    await blocked; // Ignore the stop request; yield a draft only after dispatch has unwound.
+    late();
+    return author('# Late draft\n\nDo not publish.');
+  }, provider);
+  let dispatch: ReturnType<typeof runtime.tick> | undefined;
+  try {
+    await runtime.start();
+    dispatch = runtime.tick();
+    const signal = await Promise.race([
+      launched,
+      dispatch.then(() => { throw new Error('Dispatch did not reach the provider launch.'); })
+    ]);
+    expect(signal.aborted).toBe(false);
+    const canceled = await runtime.request('POST', '/cancel');
+    expect(canceled.statusCode, canceled.body).toBe(200);
+    expect(canceled.json().run).toMatchObject({ currentStep: 'canceled', status: 'canceled' });
+    await expect(dispatch).resolves.toMatchObject({ status: 'dispatched' });
+    expect(signal.aborted).toBe(true);
+    const sessions = (await runtime.request('GET', '/sessions')).json().sessions;
+    expect(sessions).toEqual([expect.objectContaining({
+      step: 'spec.author', role: 'implementer', outcome: 'cancelled',
+      model: expect.objectContaining({ model: 'author-test-model' }),
+      startedAt: expect.any(String), endedAt: expect.any(String),
+      usage: expect.objectContaining({ coverage: 'unavailable' })
+    })]);
+    expect(runtime.launches).toHaveLength(1);
+    const activity = await runtime.replay();
+    release();
+    await returningLateDraft;
+    expect(await runtime.replay()).toEqual(activity);
+    expect(JSON.stringify(activity)).not.toContain('runner_terminal_result');
+    expect((await runtime.request('GET', '')).json()).toMatchObject({ status: 'canceled' });
+    expect((await runtime.request('GET', '/spec')).statusCode).toBe(404);
+    expect((await runtime.request('GET', '/sessions')).json().sessions).toEqual(sessions);
+    expect(runtime.launches).toHaveLength(1);
+    expect(runtime.telemetry.filter(event => event['event'] === 'spec_convergence_failed')).toHaveLength(0);
+  } finally {
+    release();
+    await dispatch?.catch(() => undefined);
+    await runtime.close();
+    await rm(runtime.paths.stateDir, { recursive: true, force: true });
+  }
 }, 15000);

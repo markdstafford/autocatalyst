@@ -99,7 +99,10 @@ export type SpecConvergenceInput = ConvergenceEngineInput & {
   readonly readCanonicalSpec: () => Promise<{ path: string; markdown: string } | undefined>;
 };
 
+const cancelledSpec = { directive: 'cancelled' } as const;
+
 export type SpecConvergenceResult =
+  | typeof cancelledSpec
   | { readonly directive: 'fail'; readonly reason: string }
   | { readonly directive: 'needs_input'; readonly checkpoint: JsonValue; readonly pause: SpecQuestionPause }
   | { readonly directive: 'advance'; readonly checkpoint: JsonValue };
@@ -246,6 +249,7 @@ export async function runSpecConvergence(
   input: SpecConvergenceInput,
   options: LayeredConvergenceEngineOptions
 ): Promise<SpecConvergenceResult> {
+  if (input.signal?.aborted) return cancelledSpec;
   const policy = (options.getPolicy ?? getStepConvergencePolicy)(input.workflow, 'spec.author');
   const progress: ReviewProgress = { altitude: getImplementationAltitudeLadder(policy)[0]!, round: 1, role: 'none' };
   const tags = { component: 'spec-convergence', runId: input.run.id, phase: 'spec', step: 'spec.author' };
@@ -260,10 +264,12 @@ export async function runSpecConvergence(
   try {
     result = await runSpecReview(input, options, policy, progress, tags);
   } catch (cause) {
+    if (input.signal?.aborted) return cancelledSpec;
     if (cause instanceof StaleDispatchError) throw cause;
     await commitConvergenceEffect(input.commitResult, async () => logFailure((cause == null ? undefined : safeFailureReasonFromError(cause)) ?? 'spec_authoring_failed'));
     throw cause;
   }
+  if (input.signal?.aborted) return cancelledSpec;
   if (result.directive === 'fail') await commitConvergenceEffect(input.commitResult, async () => logFailure(result.reason));
   return result;
 }
@@ -313,6 +319,7 @@ async function runSpecReview(
   progress.round = current.round;
   if (current.pause) return { directive: 'needs_input', pause: current.pause, checkpoint: checkpoint(current) };
   const persist = async () => {
+    input.signal?.throwIfAborted();
     await commitConvergenceEffect(input.commitResult, () => options.runSteps.updateCheckpoint({ runStepId: runStep.id, runId: run.id, tenant: run.tenant,
       checkpointResult: checkpoint(current) }));
   };
@@ -346,6 +353,7 @@ async function runSpecReview(
     }
     const canonical = await input.readCanonicalSpec();
     while (!current.outcome) {
+      if (input.signal?.aborted) return cancelledSpec;
       const altitude = ladder[current.altitudeIndex]!;
       const round = current.round;
       Object.assign(progress, { altitude, round, role: 'none' });
@@ -357,9 +365,10 @@ async function runSpecReview(
       const canonicalPath = canonical?.path ?? current.last?.path ?? pending?.path;
 
       const runRole = (role: Role, attempt: number, task: Omit<SpecReviewSessionInput, 'resultFile' | 'focus'>) => {
+        input.signal?.throwIfAborted();
         progress.role = role;
         return options.dispatcher.runRole({
-          ...base, role, reviewedOccurrence: { id: input.runStep.id, workflow: input.workflow,
+          ...base, role, ...(input.signal ? { signal: input.signal } : {}), reviewedOccurrence: { id: input.runStep.id, workflow: input.workflow,
             ...(input.stillOwns ? { stillOwns: input.stillOwns } : {}) }, route: role === 'reviewer' ? routes.reviewerRoute : routes.implementerRoute,
           toolPolicyMode: 'read_only',
           specReview: { ...task, focus: focusByAltitude[altitude],
@@ -395,6 +404,7 @@ async function runSpecReview(
             ...(canonicalPath ? { canonicalPath } : {}), ...(previousDraft ? { previousMarkdown: previousDraft } : {}),
             ...(attempt ? { correction: 'Return a valid spec envelope and disposition every listed ID exactly once.' } : {})
           });
+          if (output.workResult.directive === 'cancelled' || input.signal?.aborted) return cancelledSpec;
           if (output.workResult.directive === 'needs_input') return pause('implementer', output.workResult.question, output.sessionId);
           const parsed = reviewedSpecAuthorResultSchema.safeParse(output.sessionCheckpointResult ??
             (output.workResult.directive === 'advance' ? output.workResult.result : undefined));
@@ -436,6 +446,7 @@ async function runSpecReview(
           }),
           ...(attempt ? { correction: 'Return a valid verdict with scoped findings. Never supply anchors.' } : {})
         });
+        if (output.workResult.directive === 'cancelled' || input.signal?.aborted) return cancelledSpec;
         if (output.workResult.directive === 'needs_input') return pause('reviewer', output.workResult.question, output.sessionId);
         const parsed = specReviewerResultSchema.safeParse(output.sessionCheckpointResult ??
           (output.workResult.directive === 'advance' ? output.workResult.result : undefined));
@@ -536,6 +547,7 @@ async function runSpecReview(
   if (!selected) return fail('spec_review_checkpoint_invalid');
   const markdown = (await readCandidate(await getWorkspace(), selected)) ?? await input.readHead(selected.path);
   if (markdown === null || digest(markdown) !== selected.digest) return fail('spec_review_candidate_changed');
+  if (input.signal?.aborted) return cancelledSpec;
   const completed = await input.complete(candidateResult(selected.path, markdown, kind), markdown);
   if (!completed || completed.committedMarkdown !== markdown) return fail('spec_authoring_failed');
 

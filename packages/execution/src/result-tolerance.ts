@@ -1,3 +1,4 @@
+import { abortable } from './abortable.js';
 import type { z } from 'zod';
 import { buildResultCorrectionRequest } from './result-correction.js';
 import type { ResultCorrectionRequester } from './result-correction.js';
@@ -43,6 +44,7 @@ export interface ValidateStepResultInput<TSchema extends z.ZodTypeAny = z.ZodTyp
   readonly schemaId: string;
   readonly schema: TSchema;
   readonly candidate: unknown;
+  readonly signal?: AbortSignal;
   readonly normalizers?: ResultNormalizerRegistry | readonly ResultNormalizer[];
   readonly correctionRequester?: ResultCorrectionRequester;
   readonly maxCorrectionAttempts?: number;
@@ -88,6 +90,7 @@ export async function validateStepResult<TSchema extends z.ZodTypeAny>(
   const events: ResultToleranceEvent[] = [];
 
   while (true) {
+    input.signal?.throwIfAborted();
     const normalization = registry.normalize({
       candidate,
       runId: input.runId,
@@ -150,6 +153,7 @@ export async function validateStepResult<TSchema extends z.ZodTypeAny>(
       );
     }
 
+    const correction = input.correctionRequester;
     attempts += 1;
     try {
       const request = buildResultCorrectionRequest({
@@ -161,9 +165,10 @@ export async function validateStepResult<TSchema extends z.ZodTypeAny>(
         issues,
         candidate
       });
-      candidate = await input.correctionRequester.requestCorrection(request);
+      candidate = await abortable(input.signal, () => correction.requestCorrection(request));
       events.push({ kind: 'corrected', attempt: attempts, message: 'Correction candidate received.' });
     } catch {
+      input.signal?.throwIfAborted();
       return makeFailure('correction_request_failed', input.schemaId, attempts, 'Step result correction request failed.', issues, events);
     }
   }

@@ -793,3 +793,51 @@ describe('execution-run-unit-of-work bounded session retry', () => {
 // Suppress unused import lint
 void ((null as unknown) as RunWorkResult);
 void ((null as unknown) as ExecutionSessionRecordingError);
+
+it('passes the same signal to the entry point and stops a blocked retry backoff', async () => {
+  const cancel = new AbortController();
+  let entered!: () => void;
+  let release!: () => void;
+  const sleeping = new Promise<void>(resolve => { entered = resolve; });
+  const backoff = new Promise<void>(resolve => { release = resolve; });
+  const { entry } = makeSequencedEntryPoint([{ throw: makeTransientPreTerminal() }]);
+  const execute = vi.spyOn(entry, 'execute');
+  const unit = createExecutionRunUnitOfWork({
+    execute: entry, resolveContext: async () => makeContext(),
+    sleep() { entered(); return backoff; }
+  });
+  const result = unit.run(makeInput({ signal: cancel.signal }));
+  await sleeping;
+  cancel.abort();
+  try {
+    expect(await result).toEqual({ directive: 'cancelled' });
+    expect(execute).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ signal: cancel.signal }));
+  } finally { release(); }
+});
+
+it('finishes cancelled reviewed custody as unaccepted and records only launched sessions', async () => {
+  const { sessions, rows } = makeStoringSessions();
+  const finish = vi.fn().mockResolvedValue(undefined);
+  const execute = vi.fn(async function* (input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+    const metadata = input.context.task.inputs['launched'] === true;
+    yield { ...makeTerminalEvent('fail', false), outcome: 'cancelled',
+      ...(metadata ? { sessionMetadata: { ...baseSessionMetadata, outcome: 'cancelled', usageAvailable: false } } : {})
+    } as ExecutionBoundaryEvent;
+  });
+  const store = newStore();
+  const append = vi.spyOn(store, 'append');
+  const unit = createExecutionRunUnitOfWork({
+    execute: { execute }, resolveContext: async input => {
+      const context = makeContext();
+      return { ...context, task: { ...context.task, inputs: { launched: input.toolPolicyMode === 'write' } } };
+    },
+    reviewedAttempt: () => ({ prepare: async () => undefined, finish }),
+    eventsStore: store, sessions
+  });
+  expect(await unit.run(makeInput({ toolPolicyMode: 'read_only' }))).toEqual({ directive: 'cancelled' });
+  expect(rows()).toHaveLength(0);
+  expect(await unit.run(makeInput({ toolPolicyMode: 'write' }))).toEqual({ directive: 'cancelled' });
+  expect(rows()).toEqual([expect.objectContaining({ outcome: 'cancelled', usage: expect.objectContaining({ coverage: 'unavailable' }) })]);
+  expect(finish.mock.calls.map(([call]) => call.accepted)).toEqual([false, false]);
+  expect(append).not.toHaveBeenCalled();
+});

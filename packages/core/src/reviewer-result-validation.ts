@@ -12,6 +12,7 @@ import {
 export interface ValidateReviewerResultInput {
   readonly runId: string;
   readonly step: string;
+  readonly signal?: AbortSignal;
   readonly rawResult: unknown;
   readonly correctionRequester?: ResultCorrectionRequester;
   readonly maxCorrectionAttempts?: number;
@@ -45,6 +46,7 @@ export async function validateReviewerResult(
     schemaId: REVIEWER_RESULT_SCHEMA_ID,
     schema: reviewerResultSchema,
     candidate: input.rawResult,
+    ...(input.signal ? { signal: input.signal } : {}),
     ...(input.correctionRequester !== undefined ? { correctionRequester: input.correctionRequester } : {}),
     ...(input.maxCorrectionAttempts !== undefined ? { maxCorrectionAttempts: input.maxCorrectionAttempts } : {}),
     ...(input.normalizers !== undefined ? { normalizers: input.normalizers } : {})

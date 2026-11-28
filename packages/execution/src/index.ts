@@ -282,6 +282,7 @@ export {
 } from './direct-runner-dispatch.js';
 
 export {
+  cancellationTerminal,
   createExecutionEntryPoint,
   PreTerminalRunnerFailure,
   type CreateExecutionEntryPointOptions,
@@ -397,3 +398,5 @@ export {
   type WorkspaceConversationWriter
 } from './internal/workspace-conversation-custody.js';
 export { createWorkspaceLifecycle } from './workspace.js';
+
+export { abortable } from './abortable.js';

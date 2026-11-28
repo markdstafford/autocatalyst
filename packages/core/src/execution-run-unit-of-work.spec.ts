@@ -58,6 +58,29 @@ describe('reviewed invocation fallback', () => {
     expect(prepareFreshConversation).toHaveBeenCalledOnce();
   });
 
+  it('does not launch a native fallback after cancellation', async () => {
+    const controller = new AbortController();
+    const environment = { context: makeContext() } as Parameters<NonNullable<ExecutionEntryPointInput['prepareConversation']>>[0];
+    const prepare = vi.fn(async () => ({
+      mode: 'retained' as const, resumeId: 'prior-thread', verifyLaunch: async () => true, completed: vi.fn()
+    }));
+    const finish = vi.fn(async () => { controller.abort(); });
+    const execute = vi.fn(async function* (input: ExecutionEntryPointInput) {
+      const conversation = await input.prepareConversation?.(environment);
+      if (conversation?.mode === 'retained') throw new NativeResumeRefused('missing', false);
+      yield makeTerminalEvent('advance');
+    });
+    const uow = createExecutionRunUnitOfWork({
+      reviewedAttempt: () => ({ prepare, finish }),
+      resolveContext: async () => makeContext(),
+      execute: { execute }
+    });
+    expect(await uow.run(makeInput({ signal: controller.signal }))).toEqual({ directive: 'cancelled' });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(finish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ accepted: false, signal: controller.signal }));
+  });
+
   it.each(['missing', 'preflight', 'ambiguous'] as const)('accounts for %s without duplicating work', async reason => {
     const meta = {
       model: { provider: 'codex', model: 'test' }, inferenceSettings: {},

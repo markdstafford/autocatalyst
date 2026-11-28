@@ -43,8 +43,7 @@ export function launchScript({ events, failed, ms, signal, stillRunning }: {
     const conclusion = failed ? undefined : events.at(-1);
     for (const event of failed ? events : events.slice(0, -1)) yield event;
     if (ms > 0) {
-      // Check the durable state on each tick: run cancellation does not presently
-      // interrupt the active runner, while session.close can abort a pending timer.
+      // Session close aborts the timer; each tick also checks for a stale step.
       const total = Math.ceil(ms / 1_000);
       for (let elapsed = 1_000; elapsed <= ms; elapsed += 1_000) {
         await waitThrough(elapsed);

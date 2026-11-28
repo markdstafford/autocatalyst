@@ -341,8 +341,8 @@ it.each([
     expect(cancel.json().run.currentStep).toBe('canceled');
     release.resolve();
     await tick;
-    const expectedCalls = spec
-      ? ['implementer-1', 'reviewer-1', 'implementer-2', 'reviewer-2']
+    const expectedCalls = blockRound === 2
+      ? ['implementer-1', 'reviewer-1', 'implementer-2']
       : ['implementer-1'];
     expect(roleCalls).toEqual(expectedCalls);
     const sessions = await app.inject({ method: 'GET', url: base + '/sessions', headers: authorization });

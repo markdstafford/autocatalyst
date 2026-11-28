@@ -289,7 +289,7 @@ class ClaudeLiveQuery {
   }
 
   async *turn(prompt: string, timeoutMs: number, signal?: AbortSignal): AsyncIterable<Record<string, unknown>> {
-    const stop = () => this.close();
+    const stop = () => { try { this.close(); } catch { /* best-effort shutdown */ } };
     if (signal?.aborted) throw new DOMException('Claude session was cancelled.', 'AbortError');
     signal?.addEventListener('abort', stop, { once: true });
     const timer = setTimeout(stop, timeoutMs);
@@ -326,6 +326,7 @@ async function* realSDKLaunch(
   opts: ClaudeSessionLaunchOptions,
   queryOverride?: ClaudeSdkQuery
 ): AsyncIterable<ClaudeNativeEvent> {
+  opts.signal?.throwIfAborted();
   let query: ClaudeSdkQuery;
   let sdk: typeof import('@anthropic-ai/claude-agent-sdk') | undefined;
   try {
@@ -416,6 +417,8 @@ async function* realSDKLaunch(
       sdkOpts['persistSession'] = false;
     }
   }
+  const queryAbort = !memory && opts.signal ? new AbortController() : undefined;
+  const stop = () => queryAbort?.abort();
   let live: ClaudeLiveQuery | undefined;
   let keep = false;
   let releaseSkills: (() => void) | undefined;
@@ -426,8 +429,11 @@ async function* realSDKLaunch(
   if (root) accounting.bindRoot(root);
   const invalidRetainedRoot = () => new ProviderProtocolError('invalid_provider_event', 'Claude root conversation did not match the current query.');
   try {
+    opts.signal?.throwIfAborted();
+    if (queryAbort) opts.signal?.addEventListener('abort', stop, { once: true });
     if (memory && sdk) {
       const account = await claudeSubscriptionIdentity(opts.env ?? {});
+      opts.signal?.throwIfAborted();
       if (!account) throw new NativeResumeRefused('unsupported', false);
       // The control plane has already bound the resolved catalog skills.
       // Materialized plugin paths are temporary and differ between dispatches.
@@ -444,7 +450,9 @@ async function* realSDKLaunch(
         releaseSkills = opts.ownSkills?.();
       }
     }
-    const messages = live ? live.turn(opts.prompt, opts.timeoutMs ?? 600_000, opts.signal) : query({ prompt: opts.prompt, options: sdkOpts });
+    const messages = live ? live.turn(opts.prompt, opts.timeoutMs ?? 600_000, opts.signal) : query({
+      prompt: opts.prompt, options: queryAbort ? { ...sdkOpts, abortController: queryAbort } : sdkOpts
+    });
     for await (const msg of messages) {
       if ((retention || memory) && msg['type'] === 'system' && msg['subtype'] === 'init') {
         const id = msg['session_id'];
@@ -522,8 +530,9 @@ async function* realSDKLaunch(
     // Other messages are not used for UI events.
     }
   } finally {
+    if (queryAbort) opts.signal?.removeEventListener('abort', stop);
     if (live) {
-      if (keep && memory) memory.ready(live);
+      if (keep && memory && !live.closed) memory.ready(live);
       else live.close();
     }
     opts.onUsage?.(accounting.evidence(), [...accounting.anomalies]);
@@ -780,12 +789,14 @@ export function createClaudeAgentAdapter(
             launchEnv['MAX_THINKING_TOKENS'] = '';
             launchEnv['CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING'] = '';
           }
+          cancellation.signal.throwIfAborted();
           const supervisedRetained = runInput.nativeConversation?.mode === 'retained' &&
             runInput.nativeConversation.supervisedProcess !== undefined;
           if (subscription && !supervisedRetained && !await probeAuth(launchEnv)) {
             throw new ClassifiedProviderFailureError('provider_auth_failed', { providerKind: claudeProviderKind });
           }
 
+          cancellation.signal.throwIfAborted();
           safeLog('info', 'claude.adapter.session_start', {
             runId,
             step,
@@ -830,7 +841,9 @@ export function createClaudeAgentAdapter(
             pluginNamespaces: skillPlugins.map((plugin) => path.basename(plugin.path))
           }, { runId, step, clock, idGenerator, knownSecretValues });
 
+          cancellation.signal.throwIfAborted();
           const native = launch({
+            signal: cancellation.signal,
             ...(runInput.nativeConversation ? { conversation: runInput.nativeConversation } : {}),
             onUsage: (usage, anomalies) => {
               tokenUsage = usage;
@@ -838,7 +851,7 @@ export function createClaudeAgentAdapter(
             },
             prompt,
             ...(runInput.nativeConversation?.mode === 'in_memory' ? {
-              signal: cancellation.signal, timeoutMs: profile.endpoint.requestTimeoutMs ?? 600_000,
+              timeoutMs: profile.endpoint.requestTimeoutMs ?? 600_000,
               ownSkills() {
                 skillsOwnedByQuery = true;
                 return skillMaterialization.cleanup;
@@ -867,6 +880,7 @@ export function createClaudeAgentAdapter(
           });
 
           for await (const ev of native) {
+            cancellation.signal.throwIfAborted();
             sdkEventCount += 1;
             if (typeof ev.type === 'string') lastSdkEventType = ev.type;
             if (structuredResult !== undefined && ev.type === 'result' && ev.structuredOutput !== undefined) {
@@ -929,6 +943,10 @@ export function createClaudeAgentAdapter(
             }
           }
         } catch (err) {
+          if (cancellation.signal.aborted) {
+            outcome = 'canceled';
+            throw new DOMException('Claude session was cancelled.', 'AbortError');
+          }
           outcome = 'failed';
           cleanupSkills();
           let classified = classifySdkError(err);

@@ -39,7 +39,7 @@ import type { RunStepDefinition, RunStepId } from './run-step-catalog.js';
 import type { RunWorkflowDefinition, RunDirective } from './run-workflows.js';
 import type { ResolvedStepConvergencePolicy } from './convergence-policy.js';
 import { getStepConvergencePolicy } from './convergence-policy.js';
-import type { RunWorkResult, WorkspaceContext } from './orchestrator.js';
+import type { CancelledWorkResult, RunWorkResult, WorkspaceContext } from './orchestrator.js';
 
 export function findingSignature(finding: ReviewerFinding): string {
   const normalized = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
@@ -181,7 +181,10 @@ export class ConvergenceEngineConfigurationError extends Error {
   }
 }
 
+export type ReadConvergenceRun = (scope: { runId: string; tenant: string }) => Promise<Run | null>;
+
 export interface ConvergenceEngineOptions {
+  readonly readRun?: ReadConvergenceRun;
   readonly dispatcher: ReviewedRoleDispatcher;
   readonly git: RunWorkspaceGitPort;
   readonly feedback: FeedbackRepository;
@@ -199,6 +202,7 @@ export interface ConvergenceEngineOptions {
 }
 
 export interface ConvergenceEngineInput {
+  readonly signal?: AbortSignal;
   readonly commitResult?: CommitDispatchResult;
   readonly runId: string;
   readonly run: Run;
@@ -215,9 +219,21 @@ export interface ConvergenceEngineInput {
 
 export type ConvergenceEscalationReason = 'max_rounds' | 'oscillation';
 
-export interface ConvergenceEngineResult {
-  readonly workResult: RunWorkResult;
-  readonly checkpointResult: ConvergenceCheckpoint;
+export type ConvergenceWorkResult = Exclude<RunWorkResult, CancelledWorkResult>;
+
+export type ConvergenceEngineResult =
+  | { readonly cancelled?: never; readonly workResult: ConvergenceWorkResult; readonly checkpointResult: ConvergenceCheckpoint }
+  | { readonly cancelled: true; readonly workResult: CancelledWorkResult; readonly checkpointResult?: never };
+
+export const cancelledConvergence = { cancelled: true, workResult: { directive: 'cancelled' } } as const;
+
+export async function stopConvergenceRound(input: ConvergenceEngineInput, laterRound: boolean, readRun?: ReadConvergenceRun): Promise<boolean> {
+  if (input.signal?.aborted) return true;
+  if (laterRound && readRun) {
+    const run = await readRun({ runId: input.runId, tenant: input.tenant });
+    if (run === null || run.tenant !== input.tenant || run.terminal) return true;
+  }
+  return input.signal?.aborted === true;
 }
 
 export interface ConvergenceEngine {
@@ -258,6 +274,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
   const getPolicy = options.getPolicy ?? getStepConvergencePolicy;
 
   async function runEngine(input: ConvergenceEngineInput): Promise<ConvergenceEngineResult> {
+    if (input.signal?.aborted) return cancelledConvergence;
     // ---- Validate step has both roles -------------------------------------
     const roles = input.stepDefinition.roles;
     const hasImplementer = roles.includes('implementer');
@@ -323,6 +340,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
     let humanGuidance: string | undefined = input.humanGuidance;
 
     for (let roundNumber = 1; roundNumber <= maxRounds; roundNumber++) {
+      if (await stopConvergenceRound(input, roundNumber > 1, options.readRun)) return cancelledConvergence;
       // 1) Implementer
       const implReviewContext = lastBlockingFindingContexts.length > 0 || humanGuidance !== undefined
         ? {
@@ -343,11 +361,13 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
           };
 
       if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
+      if (input.signal?.aborted) return cancelledConvergence;
       const implDispatch: ReviewedRoleDispatchResult = await options.dispatcher.runRole({
         runId: input.runId,
         run: input.run,
         tenant: input.tenant,
         role: 'implementer',
+        ...(input.signal ? { signal: input.signal } : {}),
         ...(input.ciRepair !== undefined ? { ciRepair: input.ciRepair } : {}),
         round: roundNumber,
         reviewContext: implReviewContext,
@@ -356,7 +376,9 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         route: routes.implementerRoute
       });
 
+      if (implDispatch.workResult.directive === 'cancelled' || input.signal?.aborted) return cancelledConvergence;
       if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
+      if (input.signal?.aborted) return cancelledConvergence;
       // If implementer asked for input, surface that immediately.
       if (implDispatch.workResult.directive === 'needs_input') {
         if (input.ciRepair !== undefined && input.workspace !== undefined) {
@@ -455,11 +477,14 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
       })) ?? { commitSha: null, changedFileCount: 0, changedFilePaths: [] };
 
       // 3) Reviewer (read-only).
+      if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
+      if (input.signal?.aborted) return cancelledConvergence;
       const reviewDispatch: ReviewedRoleDispatchResult = await options.dispatcher.runRole({
         runId: input.runId,
         run: input.run,
         tenant: input.tenant,
         role: 'reviewer',
+        ...(input.signal ? { signal: input.signal } : {}),
         ...(input.ciRepair !== undefined ? { ciRepair: input.ciRepair } : {}),
         round: roundNumber,
         reviewContext: {
@@ -470,7 +495,9 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         routeProfileId: routes.reviewerRoute.profileId,
         route: routes.reviewerRoute
       });
+      if (reviewDispatch.workResult.directive === 'cancelled' || input.signal?.aborted) return cancelledConvergence;
       if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
+      if (input.signal?.aborted) return cancelledConvergence;
       lastReviewerLastPosition = reviewDispatch.lastPosition ?? lastReviewerLastPosition;
       if (reviewDispatch.modelPrincipal !== undefined) {
         reviewerPrincipal = reviewDispatch.modelPrincipal;
@@ -529,6 +556,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         };
       }
       const reviewerValidation = await validateReviewerResult({
+        ...(input.signal ? { signal: input.signal } : {}),
         runId: input.runId,
         step: input.stepDefinition.id,
         rawResult,
@@ -558,6 +586,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         };
       }
       const reviewerResult: ReviewerResult = reviewerValidation.value;
+      if (input.signal?.aborted) return cancelledConvergence;
       const findings: readonly ReviewerFinding[] = reviewerResult.status === 'findings' ? reviewerResult.findings : [];
 
       // 5) Persist reviewer findings as Feedback BEFORE convergence decision.
@@ -651,6 +680,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         lastImplementerLastPosition,
         lastReviewerLastPosition
       });
+      if (input.signal?.aborted) return cancelledConvergence;
       try {
         await commitConvergenceEffect(input.commitResult, () => options.runSteps.updateCheckpoint({
           runStepId: input.runStep.id,
@@ -667,6 +697,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         });
       }
 
+      if (input.signal?.aborted) return cancelledConvergence;
       // 9) Decide loop continuation
       if (noBlocking) {
         // Address open human-provided implementation feedback now that convergence succeeded.
@@ -714,7 +745,13 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
     return { workResult, checkpointResult: checkpoint };
   }
 
-  return { run: runEngine };
+  return { async run(input) {
+    try { return await runEngine(input); }
+    catch (error) {
+      if (input.signal?.aborted) return cancelledConvergence;
+      throw error;
+    }
+  } };
 }
 
 function buildCheckpoint(args: {

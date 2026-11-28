@@ -39,6 +39,11 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
+vi.mock('./subscription-auth.js', async importOriginal => ({
+  ...await importOriginal<typeof import('./subscription-auth.js')>(),
+  claudeSubscriptionIdentity: async () => 'fixture-account'
+}));
+
 const SECRET_TOKEN = 'sk-ant-secret-12345';
 
 describe('Claude native conversation launch options', () => {
@@ -1521,5 +1526,132 @@ describe('Claude reasoning effort', () => {
     await collect(session.events);
     expect(calls[0]?.options?.effort).toBeUndefined();
     expect(calls[0]?.env?.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+  });
+});
+
+describe('Claude provider cancellation', () => {
+  function gate() {
+    let open!: () => void;
+    const promise = new Promise<void>(resolve => { open = resolve; });
+    return { promise, open };
+  }
+
+  it('aborts the existing launch signal before removing session-owned skills', async () => {
+    const resolvedSkills = (await resolveSkills(['mm:planning'])).resolved;
+    const { input } = makeSessionInput({ resolvedSkills });
+    const entered = gate();
+    const release = gate();
+    let plugin!: string;
+    let launchSignal: AbortSignal | undefined;
+    let skillsPresentAtAbort = false;
+    const adapter = createClaudeAgentAdapter({
+      async *launchClaudeSession(opts) {
+        plugin = (opts.options?.plugins as Array<{ path: string }>)[0]!.path;
+        launchSignal = opts.signal;
+        opts.signal?.addEventListener('abort', () => { skillsPresentAtAbort = existsSync(plugin); }, { once: true });
+        expect(opts).not.toHaveProperty('abortController');
+        entered.open();
+        await release.promise;
+        yield { type: 'result', result: { output: 'late' } };
+      }
+    });
+    const session = await adapter.startSession(input);
+    const stream = collect(session.events);
+    const settled = stream.catch(() => undefined);
+    try {
+      await Promise.race([entered.promise, stream.then(() => { throw new Error('Launch did not run.'); })]);
+      await session.close?.();
+      expect(launchSignal?.aborted).toBe(true);
+      expect(skillsPresentAtAbort).toBe(true);
+      expect(existsSync(plugin)).toBe(false);
+    } finally {
+      release.open();
+      await settled;
+    }
+  });
+
+  it.each(['fresh_only', 'retained'] as const)('aborts the SDK query-local controller for %s', async mode => {
+    const cwd = await mkdtemp(path.join(tmpdir(), 'claude-stop-query-'));
+    const entered = gate();
+    const release = gate();
+    let controller: AbortController | undefined;
+    const { input } = makeSessionInput({ repoRoot: cwd, scratchRoot: cwd });
+    const adapter = createClaudeAgentAdapter({
+      async *queryClaudeSdk({ options }) {
+        controller = options?.['abortController'] as AbortController;
+        entered.open();
+        await release.promise;
+        yield { type: 'result', subtype: 'success', result: 'late' };
+      }
+    });
+    const session = await adapter.startSession({ ...input, runInput: { ...input.runInput, nativeConversation: mode === 'retained'
+      ? { mode, protectedHistoryRoots: [cwd + '-private'], verifyLaunch: async () => true, completed: vi.fn() }
+      : { mode, verifiedNonPersistence: true } } });
+    const stream = collect(session.events);
+    const settled = stream.catch(() => undefined);
+    try {
+      await Promise.race([entered.promise, stream.then(() => { throw new Error('Query did not run.'); })]);
+      expect(controller).toBeInstanceOf(AbortController);
+      expect(controller?.signal.aborted).toBe(false);
+      await session.close?.();
+      expect(controller?.signal.aborted).toBe(true);
+    } finally {
+      release.open();
+      await settled;
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a completed in-memory query for reuse and closes it on active-turn cancel', async () => {
+    const entered = gate();
+    const release = gate();
+    const close = vi.fn(() => release.open());
+    let controller: AbortController | undefined;
+    let read = 0;
+    const query = vi.fn(({ options }: { options: { abortController: AbortController } }) => {
+      controller = options.abortController;
+      return {
+        close,
+        async next() {
+          if (++read === 1) return { value: { type: 'system', subtype: 'init', session_id: 'root' }, done: false };
+          if (read === 2) return { value: { type: 'result', subtype: 'success', session_id: 'root', result: 'OK' }, done: false };
+          entered.open();
+          await release.promise;
+          return { done: true };
+        }
+      };
+    });
+    vi.doMock('@anthropic-ai/claude-agent-sdk', () => ({ query }));
+    try {
+      const { input } = makeSessionInput();
+      const adapter = createClaudeAgentAdapter();
+      const ready = vi.fn();
+      const native = { mode: 'in_memory' as const, verifyLaunch: async () => true, ready };
+      const first = await adapter.startSession({ ...input, runInput: { ...input.runInput, nativeConversation: native } });
+      await collect(first.events);
+      const resource = ready.mock.calls[0]?.[0];
+      expect(resource).toBeDefined();
+      await first.close?.();
+      expect(controller?.signal.aborted).toBe(false);
+      expect(close).not.toHaveBeenCalled();
+
+      const second = await adapter.startSession({
+        ...input, runInput: { ...input.runInput, nativeConversation: { ...native, resource } }
+      });
+      const stream = collect(second.events);
+      const settled = stream.catch(() => undefined);
+      try {
+        await Promise.race([entered.promise, stream.then(() => { throw new Error('Reused query did not run.'); })]);
+        await second.close?.();
+        expect(controller?.signal.aborted).toBe(true);
+        expect(close).toHaveBeenCalledOnce();
+        expect(query).toHaveBeenCalledOnce();
+      } finally {
+        release.open();
+        await settled;
+      }
+    } finally {
+      vi.doUnmock('@anthropic-ai/claude-agent-sdk');
+    }
   });
 });
