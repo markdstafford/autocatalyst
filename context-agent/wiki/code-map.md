@@ -40,7 +40,9 @@ Last updated: 2026-11-27 (reviewed conversation foundations, #195).
   select the pass from the next durable revision, not the number of launches.
 - Verify with `pnpm nx test core -- testing-guide.spec.ts`, the control-plane
   `fake/fake-mode.integration.spec.ts` (Fastify injection) and `fake/full-wiring.e2e.spec.ts`
-  (spawned production fake-mode entrypoint, requires loopback access). The
+  (spawned production fake-mode entrypoint, requires loopback access). The live auto-dispatch SSE
+  test in `apps/control-plane/src/integration.spec.ts` needs a valid guide result from its stub:
+  a bare `advance` fails authoring instead of reaching the human gate. The
   [concept proposal](testing-guide-concept-proposal.md) is staged for human doc review.
 
 ## Reviewed agent conversations (#195)

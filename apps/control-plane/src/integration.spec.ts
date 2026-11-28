@@ -665,17 +665,19 @@ describe('provider startup composition integration', () => {
       // Controlled runner: park the first (intake) dispatch behind a barrier so the test can
       // open the SSE stream before any post-intake transition is published, then advance each
       // step. This drives the REAL push-primary auto-dispatch path — no tick, no injected
-      // dispatch. A chore run walks intake -> implementation.plan -> implementation.build ->
-      // implementation.human_review (a human gate), exercising auto-dispatch across consecutive
-      // system/ai steps without the spec-authoring completion that feature/enhancement add.
+      // dispatch. The chore crosses the build and testing-guide steps before reaching the
+      // human gate, without the spec-authoring completion that feature/enhancement add.
       let releaseFirstDispatch!: () => void;
       const firstDispatchGate = new Promise<void>((resolve) => { releaseFirstDispatch = resolve; });
       let dispatchCount = 0;
       const unitOfWork: RunUnitOfWork = {
-        run: async () => {
+        run: async ({ run }) => {
           dispatchCount += 1;
           if (dispatchCount === 1) {
             await firstDispatchGate;
+          }
+          if (run.currentStep === 'implementation.testing_guide') {
+            return { directive: 'advance', result: { instructions: 'Inspect the build.', items: [{ text: 'Check it manually.' }] } };
           }
           return { directive: 'advance' };
         }
@@ -751,21 +753,22 @@ describe('provider startup composition integration', () => {
           }
         };
 
-        // Read live frames until the run reaches the human gate.
-        while (!transitionToSteps.includes('implementation.human_review')) {
+        // A failed run cannot reach the gate; stop reading and let the assertion report the path.
+        while (!transitionToSteps.some(step => step === 'implementation.human_review' || step === 'failed')) {
           const result = await reader.read();
           if (result.done) break;
           buffer += decoder.decode(result.value, { stream: true });
           drainFrames();
         }
 
-        // The run auto-advanced across its system/ai steps and paused at the human gate — all
-        // observed live over SSE, with no tick and no injected dispatch.
-        expect(transitionToSteps).toContain('implementation.plan');
-        expect(transitionToSteps).toContain('implementation.human_review');
-
         controller.abort();
         await reader.cancel().catch(() => undefined);
+
+        // The run auto-advanced across its system/ai steps and paused at the human gate — all
+        // observed live over SSE, with no tick and no injected dispatch.
+        expect(transitionToSteps.slice(-4)).toEqual([
+          'implementation.plan', 'implementation.build', 'implementation.testing_guide', 'implementation.human_review'
+        ]);
 
         // The run rests at the gate reporting waiting_on: human.
         const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
