@@ -1,9 +1,9 @@
-import type { PullRequest, Run } from '@autocatalyst/api-contract';
+import type { PullRequest, Run, RunStep } from '@autocatalyst/api-contract';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { RepairDecision } from './pr-ci-repair.js';
 import type { PullRequestReadOutcome } from './pr-lifecycle.js';
-import { recoverRepairAttempt, type RepairWorkerDependencies } from './pr-repair-worker.js';
+import { executeRepair, recoverRepairAttempt, type RepairWorkerDependencies } from './pr-repair-worker.js';
 
 const now = '2026-11-25T00:00:00.000Z';
 const owner = { kind: 'human', id: 'user', tenantId: 'tenant' } as const;
@@ -38,7 +38,7 @@ function dependencies(state: PullRequest['state'], headSha: string | undefined) 
   return {
     repository: { admit: vi.fn(), listByRun: vi.fn(), listRecoverable: vi.fn(), move: vi.fn(), clearDrainedHold: vi.fn() },
     epoch: 'successor', clock: () => now, pullRequest: vi.fn(async () => pr), observe: vi.fn(async () => observation),
-    workspace: vi.fn(), diff: { getChangedFiles: vi.fn() }, transition: vi.fn(), build: vi.fn(), review: vi.fn(),
+    workspace: vi.fn(), diff: { getChangedFiles: vi.fn() }, transition: vi.fn<RepairWorkerDependencies['transition']>(), build: vi.fn<RepairWorkerDependencies['build']>(), review: vi.fn(),
     git: { integrate: vi.fn(), readTarget: vi.fn(), readSource: vi.fn(), readCandidate: vi.fn(),
       verifyFreeze: vi.fn(), sameTree: vi.fn(), pushCandidate: vi.fn() }
   } satisfies RepairWorkerDependencies;
@@ -74,4 +74,41 @@ describe('repair ownership recovery', () => {
     });
     expect(deps.git.pushCandidate).not.toHaveBeenCalled();
   });
+});
+
+describe('repair conversation binding', () => {
+  it.each(['exact', 'wrong-repository', 'wrong-branch', 'lost-ownership'] as const)(
+    'passes continuity binding to build only for the verified current repair (%s)', async mode => {
+      const start = {
+        run: { ...run, currentStep: 'implementation.build' },
+        runStep: { id: 'repair-build', runId: run.id, step: 'implementation.build' } as RunStep
+      };
+      const attempt: RepairDecision = { ...publishing, state: 'queued', headSha: priorHead, currentStepId: start.runStep.id };
+      const deps = dependencies('open', priorHead);
+      const initial = await deps.observe();
+      if (initial.kind !== 'observed') throw new Error('Expected a PR observation.');
+      deps.observe.mockResolvedValue({ ...initial, failures: [{ id: 'check', name: 'test', kind: 'check_run', conclusion: 'failure' }] });
+      deps.workspace.mockResolvedValue({
+        workspaceRepoRoot: '/fixture', base: 'main', remote: 'origin', token: 'fixture',
+        repository: mode === 'wrong-repository' ? 'other/repo' : repository,
+        branch: mode === 'wrong-branch' ? 'feature/changed' : branch
+      });
+      deps.git.readCandidate.mockResolvedValue(priorHead);
+      deps.diff.getChangedFiles.mockResolvedValue([]);
+      const claimed: RepairDecision = { ...attempt, state: 'running', ownerEpoch: deps.epoch };
+      deps.transition.mockResolvedValueOnce({ decision: claimed }).mockResolvedValue(null);
+      deps.repository.listByRun.mockResolvedValue(mode === 'lost-ownership' ? [] : [claimed]);
+      deps.build.mockRejectedValue(new Error('fixture'));
+      await executeRepair(start, attempt, deps);
+      if (mode === 'exact') {
+        expect(deps.build).toHaveBeenCalledExactlyOnceWith(start.run, start.runStep, expect.objectContaining({ state: 'running' }),
+          expect.any(Function), { repository, branch, id: pr.id, number: pr.number });
+        const owns = deps.build.mock.calls[0]![3];
+        expect(await owns()).toBe(true);
+        deps.repository.listByRun.mockResolvedValue([]);
+        expect(await owns()).toBe(false);
+      } else expect(deps.build).not.toHaveBeenCalled();
+      expect(deps.git.pushCandidate).not.toHaveBeenCalled();
+    }
+  );
 });

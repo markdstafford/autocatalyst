@@ -19,7 +19,7 @@ const provider = process.env['AUTOCATALYST_LIVE_MEMORY_PROVIDER'];
 const git = promisify(execFile);
 
 describe.skipIf(provider === undefined)('live reviewed conversation', () => {
-  it('recalls the prior round only within the same role, without writing a transcript', async () => {
+  it('recalls compatible spec and build turns, adopts a fixture repair binding and keeps final review fresh', async () => {
     const model = process.env['AUTOCATALYST_LIVE_MEMORY_MODEL'];
     const home = process.env[provider === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'];
     if ((provider !== 'claude' && provider !== 'codex') || !model || !home || !await realpath(home)) {
@@ -46,13 +46,17 @@ describe.skipIf(provider === undefined)('live reviewed conversation', () => {
       const topic = await repos.topics.create({ owner, tenant, conversationId: conversation.id, title: 'Fixture', kind: 'main' });
       const clock = () => new Date().toISOString();
       let work = await startRunLifecycle({ runs: repos.runs, run: { owner, tenant, topicId: topic.id, workKind: 'feature' }, clock });
-      while (work.run.currentStep !== 'implementation.build') {
-        work = await applyRunDirective({ runs: repos.runs, runId: work.run.id, directive: 'advance', clock });
+      async function advanceTo(step: string) {
+        while (work.run.currentStep !== step) {
+          if (work.run.terminal) throw new Error('The fixture did not reach its target step.');
+          work = await applyRunDirective({ runs: repos.runs, runId: work.run.id, directive: 'advance', clock });
+        }
       }
-      const { run, runStep } = work;
+      await advanceTo('spec.author');
+      const runId = work.run.id;
       const workspacesRoot = join(root, 'workspaces');
-      const repoRoot = join(workspacesRoot, run.id, 'repo');
-      const scratchRoot = join(workspacesRoot, run.id, 'scratch');
+      const repoRoot = join(workspacesRoot, runId, 'repo');
+      const scratchRoot = join(workspacesRoot, runId, 'scratch');
       const hostRepository = join(root, 'host');
       await Promise.all([mkdir(hostRepository), mkdir(scratchRoot, { recursive: true })]);
       const args = { cwd: hostRepository, env: { ...process.env,
@@ -60,7 +64,7 @@ describe.skipIf(provider === undefined)('live reviewed conversation', () => {
       await git('git', ['init', '-b', 'main'], args);
       await git('git', ['commit', '--allow-empty', '-m', 'base'], args);
       await git('git', ['worktree', 'add', '-b', 'fixture', repoRoot], args);
-      await repos.runWorkspaceMetadata.upsert({ runId: run.id, workspaceHandle: 'fixture', workspaceRepoRoot: repoRoot, createdAt: clock() });
+      await repos.runWorkspaceMetadata.upsert({ runId, workspaceHandle: 'fixture', workspaceRepoRoot: repoRoot, createdAt: clock() });
 
       const adapter = provider === 'codex' ? createCodexAgentAdapter({ authentication: 'business_sign_in' })
         : createClaudeAgentAdapter({ authentication: 'subscription' });
@@ -69,12 +73,17 @@ describe.skipIf(provider === undefined)('live reviewed conversation', () => {
         profileName: 'live-conversation', model: { model, provider: provider === 'codex' ? 'openai' : 'anthropic' },
         inferenceSettings: { reasoningEffort: 'low' }, connectionMechanism: 'process_environment', endpoint: {}
       };
-      const runContext = { id: run.id, tenant, workKind: 'feature', currentStep: 'implementation.build' } as const;
+      const specPath = 'context-human/specs/feature-live-fixture.md';
+      const prepareFreshConversation = createFreshConversationResolver();
+      const evidence: { decision: string; reason: string; conversationId: string }[] = [];
       const workspaceRoots = [repoRoot, scratchRoot];
       const allowedTools = ['bash', 'filesystem'];
       const skills = { requested: [], resolved: [] };
       const repository = new DrizzleAgentConversationRepository(db);
-      async function turn(prompt: string, role: 'implementer' | 'reviewer', round: number, resume: boolean) {
+      async function turn(prompt: string, role: 'implementer' | 'reviewer', round: number, resume: boolean,
+        options: { provisional?: boolean; repair?: boolean } = {}) {
+        const { run, runStep } = work;
+        const runContext = { id: runId, tenant, workKind: 'feature', currentStep: run.currentStep } as const;
         const resultFile = `result-${randomUUID()}.txt`;
         const environment: MaterializedExecutionEnvironment = {
           context: { run: runContext, task: { prompt, inputs: { outputContract: { resultFile } } },
@@ -86,22 +95,38 @@ describe.skipIf(provider === undefined)('live reviewed conversation', () => {
           toolPolicy: { allowedTools, workspaceRoots }, skills,
           capabilities: { shell: { kind: 'bash', available: false }, paths: { repoRoot, scratchRoot }, lsp: { requested: false, available: false } }
         };
+        let settle: ((path?: string) => Promise<void>) | undefined;
         const port = createReviewedAttemptPort({
-          repository, roleInput: { run, runId: run.id, tenant, role, round,
-            reviewedOccurrence: { id: runStep.id, workflow: runWorkflows.feature } },
-          live, admitsLive: admitsReviewedLiveConversation, prepareFreshConversation: createFreshConversationResolver(),
-          workspacesRoot, hostRepository, repositoryIdentity: 'test/repo', freshHandoff: ''
-        })!;
+          repository, roleInput: { run, runId, tenant, role, round,
+            reviewedOccurrence: { id: runStep.id, workflow: runWorkflows.feature, stillOwns: async () =>
+              (await repos.runSteps.listByRun(runId)).some(step => step.id === runStep.id && step.endedAt === null) },
+            ...(run.currentStep === 'spec.author' ? {
+              specReview: { resultFile, focus: 'fixture', ...(!options.provisional ? { canonicalPath: specPath } : {}) },
+              ...(role === 'implementer' ? { deferSpecAuthorConversation: (callback: (path?: string) => Promise<void>) => { settle = callback; } } : {})
+            } : {}),
+            ...(options.repair ? { ciRepair: { failedHead: 'a'.repeat(40), failures: [],
+              prBinding: { repository: 'test/repo', id: 'fixture-pr', branch: 'fixture', number: 1 } } } : {})
+          },
+          live, admitsLive: admitsReviewedLiveConversation, prepareFreshConversation,
+          workspacesRoot, hostRepository, repositoryIdentity: 'test/repo', freshHandoff: '',
+          recordReuse: (_attempt, decision) => { evidence.push(decision); }
+        });
         const attemptId = 'sess_' + randomUUID();
-        const nativeConversation = await port.prepare({ attemptId, environment, profile, fallback: false });
-        if (nativeConversation?.mode !== 'in_memory') throw new Error('Expected production in-memory admission.');
-        expect(Boolean(nativeConversation.resource)).toBe(resume);
+        const nativeConversation = port ? await port.prepare({ attemptId, environment, profile, fallback: false })
+          : await prepareFreshConversation(environment, profile);
+        if (run.currentStep === 'pr.finalize') {
+          expect(port).toBeUndefined();
+          expect(nativeConversation?.mode).toBe('fresh_only');
+        } else {
+          if (nativeConversation?.mode !== 'in_memory') throw new Error('Expected production in-memory admission.');
+          expect(Boolean(nativeConversation.resource)).toBe(resume);
+        }
         const telemetryContext = { runId: run.id, step: run.currentStep, role };
         const connection = await createAgentConnection({ profile, telemetryContext, credentialReference: { required: false },
           credentialResolver: { resolveCredential: async () => undefined } });
         let accepted = false;
         try {
-          const session = await adapter.startSession({ profile, connection, telemetryContext, runInput: { nativeConversation, environment } });
+          const session = await adapter.startSession({ profile, connection, telemetryContext, runInput: { ...(nativeConversation ? { nativeConversation } : {}), environment } });
           try {
             for await (const event of session.events) {
               expect(event.type).not.toBe('runner_tool_activity');
@@ -112,21 +137,48 @@ describe.skipIf(provider === undefined)('live reviewed conversation', () => {
             return (await readFile(join(scratchRoot, resultFile), 'utf8')).trim();
           } finally { await session.close?.(); }
         } finally {
-          await port.finish({ attemptId, accepted });
+          await port?.finish({ attemptId, accepted });
+          await settle?.(specPath);
           await connection.close?.();
         }
       }
 
-      const marker = randomUUID();
-      expect(await turn(`Do not use tools. Remember this fixture marker for a later turn. Reply with only ${marker}`, 'implementer', 1, false)).toBe(marker);
-      expect(await turn('Without tools or guessing, reply only with the exact fixture marker from the earlier turn.', 'implementer', 2, true)).toBe(marker);
-      expect(await turn('Without tools, reply only with the earlier fixture marker if present in this conversation, otherwise reply NONE.',
-        'reviewer', 1, false)).toBe('NONE');
+      const remember = (marker: string) => `Do not use tools. Remember this fixture marker for a later turn. Reply with only ${marker}`;
+      const recall = 'Without tools or guessing, reply only with the exact fixture marker from the earlier turn.';
+      const independent = 'Without tools, reply only with the earlier fixture marker if present in this conversation, otherwise reply NONE.';
+      const specMarker = randomUUID();
+      expect(await turn(remember(specMarker), 'implementer', 1, false, { provisional: true })).toBe(specMarker);
+      const specReviewerMarker = randomUUID();
+      expect(await turn(remember(specReviewerMarker), 'reviewer', 1, false)).toBe(specReviewerMarker);
+      expect(await turn(recall, 'implementer', 2, true)).toBe(specMarker);
+      expect(await turn(recall, 'reviewer', 2, true)).toBe(specReviewerMarker);
+
+      await advanceTo('implementation.build');
+      const buildMarker = randomUUID();
+      const reviewerMarker = randomUUID();
+      expect(await turn(remember(buildMarker), 'implementer', 1, false)).toBe(buildMarker);
+      expect(await turn(remember(reviewerMarker), 'reviewer', 1, false)).toBe(reviewerMarker);
+      expect(await turn(recall, 'implementer', 2, true)).toBe(buildMarker);
+      expect(await turn(recall, 'reviewer', 2, true)).toBe(reviewerMarker);
+
+      // Exercise the real port on a new occurrence with a fixture PR binding.
+      // The production repair worker's remote and ownership checks are tested separately.
+      await advanceTo('implementation.human_review');
+      work = await applyRunDirective({ runs: repos.runs, runId, directive: 'revise', clock });
+      expect(work.run.currentStep).toBe('implementation.build');
+      expect(await turn(recall, 'implementer', 1, true, { repair: true })).toBe(buildMarker);
+      expect(await turn(recall, 'reviewer', 1, true, { repair: true })).toBe(reviewerMarker);
+      expect(evidence.filter(row => row.reason === 'repair_adopted' && row.decision === 'resume_submitted')).toHaveLength(2);
+
+      await advanceTo('pr.finalize');
+      const finalMarker = randomUUID();
+      expect(await turn(remember(finalMarker), 'reviewer', 1, false)).toBe(finalMarker);
+      expect(await turn(independent, 'reviewer', 2, false)).toBe('NONE');
       expect(await transcripts()).toEqual(before);
     } finally {
       live.close();
       db.close();
       await rm(root, { recursive: true, force: true });
     }
-  }, 180_000);
+  }, 300_000);
 });

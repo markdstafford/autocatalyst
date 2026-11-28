@@ -81,7 +81,7 @@ describe('reviewed invocation fallback', () => {
     expect(finish).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ accepted: false, signal: controller.signal }));
   });
 
-  it.each(['missing', 'preflight', 'ambiguous'] as const)('accounts for %s without duplicating work', async reason => {
+  it.each(['submitted', 'preflight', 'ambiguous'] as const)('accounts for %s without duplicating work', async reason => {
     const meta = {
       model: { provider: 'codex', model: 'test' }, inferenceSettings: {},
       startedAt: '2026-06-09T00:00:00.000Z', endedAt: '2026-06-09T00:00:01.000Z',
@@ -105,17 +105,17 @@ describe('reviewed invocation fallback', () => {
           attempts.push(input.attemptId!);
           await input.prepareConversation?.(environment);
           if (attempts.length === 1) throw new PreTerminalRunnerFailure(
-            reason === 'ambiguous' ? new Error('Unknown execution state') : new NativeResumeRefused('missing', reason === 'missing'),
+            reason === 'ambiguous' ? new Error('Unknown execution state') : new NativeResumeRefused('missing', reason === 'submitted'),
             meta
           );
           yield { ...makeTerminalEvent('advance'), sessionMetadata: { ...meta, outcome: 'succeeded' } } as ExecutionBoundaryEvent;
         }
       }
     });
-    expect((await uow.runWithCheckpoint(makeInput())).workResult.directive).toBe(reason === 'ambiguous' ? 'fail' : 'advance');
-    expect(new Set(attempts).size).toBe(reason === 'ambiguous' ? 1 : 2);
+    expect((await uow.runWithCheckpoint(makeInput())).workResult.directive).toBe(reason === 'preflight' ? 'advance' : 'fail');
+    expect(new Set(attempts).size).toBe(reason === 'preflight' ? 2 : 1);
     expect(create.mock.calls.map(([, id]) => id)).toEqual(reason === 'preflight' ? [attempts[1]] : attempts);
-    expect(finish.mock.calls.length).toBe(reason === 'ambiguous' ? 1 : 2);
+    expect(finish.mock.calls.length).toBe(reason === 'preflight' ? 2 : 1);
   });
 });
 
