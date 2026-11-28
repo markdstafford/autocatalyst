@@ -97,6 +97,8 @@ Last updated: 2026-11-27 (reviewed conversation foundations, #195).
 
 ## Guarded PR publication and CI repair (#201)
 
+- The pinned review snapshot checks credential-like filename patterns at token boundaries. Ordinary filenames such as `task-decomposition.md` must still materialize.
+
 - `apps/control-plane/src/publication-git.ts` applies containment, clean/idle branch verification, pinned integration and host push guards. `packages/core/src/pr-publication.ts` defines binding, attestation, receipt and initial recovery rules; `orchestrator.ts` and `pr-open-handler.ts` apply them to existing workflow IDs.
 - `packages/github-code-host-adapter/src/github-required-checks.ts` validates complete exact-head evidence; `packages/core/src/pr-lifecycle.ts` bounds reconciliation and tenant-scoped admission. `pr-ci-repair.ts` defines decisions and occurrence ownership; `pr-repair-worker.ts` implements claim, guidance, final review and same-PR publication. `packages/persistence/src/pr-ci-repair-repository.ts` and migration 0012 own atomic state and provenance.
 - `packages/api-contract/src/run-system-activity.ts`, `packages/core/src/pr-system-activity.ts`, and `apps/web/src/runs/pr-system-activity.tsx` expose and display typed evidence without new routes or SSE event types. `use-run-detail.ts` selects the current durable guidance pause; `run-detail-pane.tsx` reuses one form for spec and CI repair guidance. See [PR publication and repair](pr-publication.md) for state and operator gotchas.
