@@ -315,6 +315,25 @@ describe('OpenAPI generation', () => {
     expect((operation as { responses?: Record<string, unknown> })?.responses?.['500']).toBeDefined();
   });
 
+  it('documents testing result routes, implementation feedback, and decision conflict details', () => {
+    const { paths, components } = generateOpenApiDocument();
+    const results = paths['/v1/runs/{id}/testing-guide/results'];
+    expect(results?.get?.responses?.['200']).toBeDefined();
+    expect(results?.put?.responses?.['409']).toMatchObject({ description: expect.stringContaining('stale_guide_revision') });
+    expect(results?.put?.responses?.['422']).toMatchObject({ description: expect.stringContaining('unknown_test_items') });
+    expect(paths['/v1/runs/{id}/test-results']?.get?.responses?.['200']).toBeDefined();
+    expect(paths['/v1/runs/{id}/replies']?.post?.responses?.['409'])
+      .toMatchObject({ description: expect.stringContaining('failed_test_items') });
+    expect(paths['/v1/runs/{id}/feedback']?.post?.responses?.['422'])
+      .toMatchObject({ description: expect.stringContaining('invalid_feedback_anchor') });
+    expect(components?.schemas?.['CreateRunFeedbackRequest']).toMatchObject({
+      oneOf: expect.arrayContaining([expect.objectContaining({
+        additionalProperties: false,
+        properties: expect.objectContaining({ target: expect.objectContaining({ enum: ['implementation'] }) })
+      })])
+    });
+  });
+
   it('documents each operator action and the set_step event', () => {
     const { paths, components } = generateOpenApiDocument();
     for (const [method, suffix, required] of [

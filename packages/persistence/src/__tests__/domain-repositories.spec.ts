@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { FeedbackConcurrentModificationError } from '@autocatalyst/core';
+import { DefaultOrchestrator, FeedbackConcurrentModificationError, InMemoryRunEventBus, RunDispatchQueue } from '@autocatalyst/core';
 
 import {
   asInternalSqliteDatabase,
@@ -90,6 +90,151 @@ describe('DrizzleDomainRepositories round-trip', () => {
       expect(await repository.findLatestByRun({ ...scope, tenant: 'other' })).toBeNull();
       expect(asInternalSqliteDatabase(database).client.prepare('select revision from testing_guides order by revision').all())
         .toEqual([{ revision: 1 }, { revision: 2 }]);
+    });
+  });
+
+  it('stores same-revision finals by occurrence and discards only the working result on an undecided exit', async () => {
+    await withRepositories(async (repos, db) => {
+      const tenant = owner.tenantId;
+      const { topic } = await createProjectConversationAndTopic(repos, { tenant, owner, identity: 'passes', title: 'Passes' });
+      const time = '2026-11-28T00:00:00Z';
+      const step = (name: string) => ({ phase: 'implementation' as const, step: name, role: 'none' as const,
+        startedAt: time, endedAt: null, durationMs: null });
+      const { run, runStep } = await repos.runs.recordRunLifecycleStart({
+        run: { topicId: topic.id, owner, tenant, workKind: 'chore', terminal: false, currentStep: 'implementation.testing_guide' },
+        runStep: step('implementation.testing_guide')
+      });
+      const scope = { runId: run.id, tenant };
+      await repos.testingGuides.create({ ...scope, runStepId: runStep.id, revision: 1, id: 'guide_1',
+        instructions: 'Try it', items: [{ id: 'A', text: 'Check A' }], createdAt: time });
+      await expect(repos.testingGuides.findByRunAndRevision({ ...scope, revision: 1 })).resolves.toMatchObject({ id: 'guide_1' });
+      await expect(repos.testingGuides.findByRunAndRevision({ ...scope, tenant: 'other', revision: 1 })).resolves.toBeNull();
+      const gateName = 'implementation.human_review';
+      const firstGate = await repos.runs.recordRunStepTransition({ ...scope, expectedStep: 'implementation.testing_guide',
+        currentStep: gateName, terminal: false, runStep: step(gateName) });
+      const pass = { ...scope, guideRevision: 1, gateStepId: firstGate.runStep.id, tester: owner,
+        items: [{ id: 'A', outcome: 'passed' as const, note: 'Good.' }] };
+      const legacy = await repos.testResults.create({
+        runId: run.id, outcome: 'blocked', tester: owner,
+        evidence: { kind: 'external', summary: 'Old record' }, feedbackRefs: ['old']
+      });
+      await expect(repos.testResults.saveWorking({ ...pass, tenant: 'other' })).rejects.toThrow();
+      await expect(repos.testResults.saveWorking({ ...pass, guideRevision: 2 })).rejects.toMatchObject({ latestGuideRevision: 1 });
+      const working = await repos.testResults.saveWorking(pass);
+      expect(working).toMatchObject({ state: 'working', outcome: 'passed', feedbackRefs: [] });
+      expect(await repos.testResults.saveWorking(pass)).toEqual(working);
+      expect(await repos.testResults.findWorkingByRun(run.id)).toMatchObject({ id: working.id, gateStepId: pass.gateStepId });
+
+      const confirm = { ...owner, id: 'decision_maker' };
+      const final = await repos.testResults.finalize({ ...pass, tester: confirm, feedbackRefs: [] });
+      expect(final).toMatchObject({ id: working.id, createdAt: working.createdAt, state: 'final', tester: confirm });
+      expect(await repos.testResults.finalize({ ...pass, feedbackRefs: ['ignored'] })).toEqual(final);
+      await expect(repos.testResults.saveWorking(pass)).rejects.toThrow();
+
+      const reopen = (gateStepId: string) => repos.runs.recordRunStepTransition({
+        runId: run.id, sourceRunStepId: gateStepId, expectedStep: gateName, currentStep: gateName,
+        terminal: false, runStep: step(gateName)
+      });
+      const second = await reopen(firstGate.runStep.id);
+      const secondFinal = await repos.testResults.finalize({ ...pass, gateStepId: second.runStep.id, feedbackRefs: [] });
+      const third = await reopen(second.runStep.id);
+      const draft = await repos.testResults.saveWorking({ ...pass, gateStepId: third.runStep.id });
+      const raw = asInternalSqliteDatabase(db).client;
+      raw.prepare('UPDATE test_results SET created_at = ?, updated_at = ? WHERE state = ?').run(time, time, 'final');
+      expect((await repos.testResults.listByRun(run.id)).map(result => result.id))
+        .toEqual([legacy.id, final.id, secondFinal.id, draft.id]);
+      expect((await repos.testResults.findLatestFinalByRun(run.id))?.id).toBe(secondFinal.id);
+      await expect(reopen(second.runStep.id)).rejects.toMatchObject({ code: 'source_occurrence_mismatch' });
+      expect(await repos.testResults.findWorkingByRun(run.id)).toMatchObject({ id: draft.id });
+
+      // A new gate's insert is later than draft deletion in the transaction.
+      raw.exec("CREATE TRIGGER reject_gate BEFORE INSERT ON run_steps WHEN NEW.step = 'implementation.human_review' BEGIN SELECT RAISE(ABORT, 'test fault'); END;");
+      await expect(reopen(third.runStep.id)).rejects.toThrow('test fault');
+      expect(await repos.testResults.findWorkingByRun(run.id)).toMatchObject({ id: draft.id });
+      raw.exec('DROP TRIGGER reject_gate');
+
+      // Pin the original occurrence at request intake, then replace it with a same-revision gate.
+      let captured!: () => void;
+      const observed = new Promise<void>(resolve => { captured = resolve; });
+      let unblock!: () => void;
+      const replacement = new Promise<void>(resolve => { unblock = resolve; });
+      const findOpen = repos.runs.findLatestOpenRunStep.bind(repos.runs);
+      vi.spyOn(repos.runs, 'findLatestOpenRunStep').mockImplementationOnce(async input => {
+        const prior = await findOpen(input);
+        captured();
+        await replacement;
+        return prior;
+      });
+      const orchestrator = new DefaultOrchestrator({
+        runs: repos.runs, events: new InMemoryRunEventBus(), dispatchQueue: new RunDispatchQueue({ maxConcurrent: 1 }),
+        autoDispatch: false, testingGuides: repos.testingGuides, testResults: repos.testResults
+      });
+      const raced = orchestrator.saveTestingGuideResults({ ...scope, principal: owner, request: {
+        guideRevision: 1, items: [{ id: 'A', outcome: 'failed', note: 'From the old occurrence' }]
+      } });
+      await observed;
+      const fourth = await reopen(third.runStep.id);
+      unblock();
+      await expect(raced).rejects.toMatchObject({ code: 'conflict' });
+      expect(await repos.testResults.findWorkingByRun(run.id)).toBeNull();
+      expect(await repos.testResults.findById(draft.id)).toBeNull();
+      expect((await repos.testResults.listByRun(run.id)).map(result => result.id)).toEqual([legacy.id, final.id, secondFinal.id]);
+      expect(await repos.feedback.listByRun(run.id)).toEqual([]);
+      await expect(repos.testResults.saveWorking({ ...pass, gateStepId: third.runStep.id })).rejects.toThrow();
+      const saved = await orchestrator.saveTestingGuideResults({ ...scope, principal: owner, request: { guideRevision: 1, items: [] } });
+      expect(saved.items).toEqual(pass.items);
+      expect(saved.testResultId).not.toBe(draft.id);
+      expect(await repos.testResults.findWorkingByRun(run.id)).toMatchObject({ gateStepId: fourth.runStep.id });
+    });
+  });
+
+  it('keeps all three implementation decisions and standalone feedback usable without a testing guide', async () => {
+    await withRepositories(async repos => {
+      const tenant = owner.tenantId;
+      const { topic } = await createProjectConversationAndTopic(repos, { tenant, owner, identity: 'no-guide', title: 'No guide' });
+      const step = (name: string) => ({ phase: 'implementation' as const, step: name, role: 'none' as const,
+        startedAt: '2026-11-28T00:00:00Z', endedAt: null, durationMs: null });
+      const gateName = 'implementation.human_review';
+      const { run } = await repos.runs.recordRunLifecycleStart({
+        run: { topicId: topic.id, owner, tenant, workKind: 'chore', terminal: false, currentStep: gateName },
+        runStep: step(gateName)
+      });
+      let ids = 0;
+      const orchestrator = new DefaultOrchestrator({
+        runs: repos.runs, events: new InMemoryRunEventBus(), dispatchQueue: new RunDispatchQueue({ maxConcurrent: 1 }),
+        autoDispatch: false, testingGuides: repos.testingGuides, testResults: repos.testResults,
+        feedbackLifecycleDependencies: { feedback: repos.feedback, ids: () => `comment_${++ids}`, clock: () => run.createdAt }
+      });
+      const scope = { runId: run.id, tenant, principal: owner };
+      await expect(orchestrator.saveTestingGuideResults({ ...scope, request: { guideRevision: 1, items: [] } }))
+        .rejects.toMatchObject({ code: 'missing_run', message: 'Testing guide not found.' });
+      const general = await orchestrator.createImplementationFeedback({ ...scope, title: 'General', body: 'Fix this.' });
+      expect((await repos.runs.findById(run.id))?.currentStep).toBe(gateName);
+      expect(general).toMatchObject({ status: 'open', target: 'implementation' });
+      await expect(orchestrator.replyToRun({ ...scope, request: { kind: 'request_changes' } }))
+        .resolves.toMatchObject({ classification: { directive: 'revise', target: 'implementation' } });
+
+      const returnToReview = async () => {
+        await repos.runs.recordRunStepTransition({
+          runId: run.id, expectedStep: 'implementation.build', currentStep: gateName, terminal: false, runStep: step(gateName)
+        });
+      };
+      await returnToReview();
+      const { classification } = await orchestrator.replyToRun({
+        ...scope, request: { kind: 'feedback', title: 'Second', body: 'Fix another thing.' }
+      });
+      expect(classification.createdFeedbackId).toBeDefined();
+      await returnToReview();
+      for (const item of await repos.feedback.listByRun(run.id)) {
+        await repos.feedback.updateStatusAndAppendThread({
+          feedbackId: item.id, expectedStatus: 'open', nextStatus: 'addressed', updatedAt: run.createdAt,
+          threadEntry: { id: `comment_${++ids}`, author: owner, body: 'Fixed.', createdAt: run.createdAt }
+        });
+      }
+      await expect(orchestrator.replyToRun({ ...scope, request: { kind: 'approve' } }))
+        .resolves.toMatchObject({ classification: { directive: 'advance' } });
+      expect(await repos.testResults.listByRun(run.id)).toEqual([]);
+      expect((await repos.feedback.listByRun(run.id)).map(item => item.status)).toEqual(['resolved', 'resolved']);
     });
   });
 
