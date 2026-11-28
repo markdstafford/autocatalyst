@@ -2077,3 +2077,119 @@ describe('createExecutionEntryPoint — pr.finalize boundary regression', () => 
     }
   });
 });
+
+describe('dispatch abort', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((ok, fail) => { resolve = ok; reject = fail; });
+    return { promise, resolve, reject };
+  }
+  async function collect(events: AsyncIterable<ExecutionBoundaryEvent>) {
+    const collected: ExecutionBoundaryEvent[] = [];
+    for await (const event of events) collected.push(event);
+    return collected;
+  }
+
+  it.each(['before setup', 'during setup'])('does not launch or record a session when aborted %s', async when => {
+    const context = makeContext();
+    const controller = new AbortController();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const materialize = vi.fn(async () => {
+      entered.resolve();
+      await release.promise;
+      return makeMaterializedEnv(context);
+    });
+    const runner = { run: vi.fn(), close: vi.fn().mockResolvedValue({ status: 'closed' }) };
+    const entry = createExecutionEntryPoint({ runner, materialize, resultValidation: { mode: 'none' } });
+    if (when === 'before setup') controller.abort();
+    const events = collect(entry.execute({ context, signal: controller.signal }));
+    if (when === 'during setup') {
+      await entered.promise;
+      controller.abort();
+      release.resolve();
+    } else expect(materialize).not.toHaveBeenCalled();
+
+    const seen = await events;
+    expect(seen).toEqual([expect.objectContaining({ type: 'runner_terminal_result', outcome: 'cancelled' })]);
+    expect(seen[0]).not.toHaveProperty('sessionMetadata');
+    expect(runner.run).not.toHaveBeenCalled();
+    expect(runner.close).toHaveBeenCalledOnce();
+  });
+
+  it.each(['blocked read', 'buffered terminal'])('aborts a %s without waiting for a late read, disposal, close or metadata', async scenario => {
+    const context = makeContext();
+    const controller = new AbortController();
+    const blocked = deferred<void>();
+    const lateRead = deferred<IteratorResult<RunnerEvent>>();
+    const lateClose = deferred<RunnerCloseResult>();
+    const lateReturn = deferred<IteratorResult<RunnerEvent>>();
+    const facts = { model: { provider: 'script', model: 'test' }, inferenceSettings: { reasoningEffort: 'low' as const },
+      startedAt: '2026-06-09T00:00:00.000Z' };
+    const next = vi.fn(() => { blocked.resolve(); return lateRead.promise; });
+    if (scenario === 'buffered terminal') next.mockResolvedValueOnce({ done: false, value: makeTerminalEvent() });
+    const dispose = vi.fn(() => lateReturn.promise);
+    const runner: Runner = {
+      run(input) {
+        input.onAttemptLaunch?.(facts);
+        return { [Symbol.asyncIterator]: () => ({ next, return: dispose }) };
+      },
+      close: vi.fn(() => lateClose.promise),
+      getSessionMetadata: vi.fn(() => new Promise(() => undefined))
+    };
+    const entry = createExecutionEntryPoint({ runner, materialize: async () => makeMaterializedEnv(context), resultValidation: { mode: 'none' } });
+    const result = collect(entry.execute({ context, signal: controller.signal }));
+    await blocked.promise;
+    controller.abort();
+    expect(await result).toEqual([expect.objectContaining({
+      type: 'runner_terminal_result', outcome: 'cancelled',
+      sessionMetadata: { ...facts, endedAt: expect.any(String), outcome: 'cancelled', usageAvailable: false }
+    })]);
+    expect(runner.close).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(runner.getSessionMetadata).not.toHaveBeenCalled();
+    lateRead.reject(new Error('late read rejection'));
+    lateClose.reject(new Error('late close rejection'));
+    lateReturn.reject(new Error('late disposal rejection'));
+  });
+
+  it('discards in-flight result correction on abort without awaiting it', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'cancel-correction-'));
+    const controller = new AbortController();
+    const entered = deferred<void>();
+    const correction = deferred<unknown>();
+    const requestCorrection = vi.fn(() => { entered.resolve(); return correction.promise; });
+    const resultFile = 'cancel-result.json';
+    const context = makeContext();
+    try {
+      await writeFile(path.join(scratchRoot, resultFile), '{}');
+      const runner = makeFakeRunner([makeTerminalEvent()]);
+      const entry = createExecutionEntryPoint({ runner, materialize: async () => ({
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      }), resultValidation: {
+        mode: 'scratch_file', schema: z.object({ ok: z.boolean() }), schemaId: 'test', resultFile,
+        correctionRequester: { requestCorrection }
+      } });
+      const result = collect(entry.execute({ context, signal: controller.signal }));
+      await Promise.race([entered.promise, result.then(() => { throw new Error('Correction did not start.'); })]);
+      controller.abort();
+      expect(await result).toEqual([expect.objectContaining({ outcome: 'cancelled' })]);
+      correction.resolve({ ok: true });
+      expect(requestCorrection).toHaveBeenCalledOnce();
+      expect(runner.close).toHaveBeenCalledOnce();
+    } finally { await rm(scratchRoot, { recursive: true, force: true }); }
+  });
+
+  it('keeps a normal terminal already handed off', async () => {
+    const controller = new AbortController();
+    const runner = makeFakeRunner([makeTerminalEvent()]);
+    const entry = createExecutionEntryPoint({ runner, materialize: async ctx => makeMaterializedEnv(ctx), resultValidation: { mode: 'none' } });
+    const events = entry.execute({ context: makeContext(), signal: controller.signal })[Symbol.asyncIterator]();
+    expect((await events.next()).value).toEqual(makeTerminalEvent());
+    controller.abort();
+    expect((await events.next()).done).toBe(true);
+    expect(runner.close).toHaveBeenCalledOnce();
+  });
+});

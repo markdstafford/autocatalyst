@@ -8,6 +8,7 @@ import type {
   AgentConnectionTelemetryContext,
   AgentProviderAdapter,
   AgentProviderSession,
+  AgentTokenUsage,
   ResolvedAgentRunnerProfile
 } from './agent-provider-adapter.js';
 import { ProviderConfigurationError, ProviderConnectionError } from './agent-provider-adapter.js';
@@ -32,6 +33,10 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
 
   // State for close idempotency — shared between run() generator and close().
   let activeSession: AgentProviderSession | undefined;
+  let closeRequested = false;
+  let launchFacts: Parameters<NonNullable<RunnerRunInput['onAttemptLaunch']>>[0] | undefined;
+  let assistantTurnCount = 0;
+  let toolCallCount = 0;
   let sessionClosed = false;
   let adapterClosed = false;
   let connectionClosed = false;
@@ -41,6 +46,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
 
   return {
     async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+      if (closeRequested || input.signal?.aborted) return;
       // Pre-flight validation
       if (profile.mode !== 'agent') {
         throw new ProviderConfigurationError(
@@ -132,6 +138,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
           ? { ...input, modelMemory: scopedModelMemory }
           : input;
 
+      if (closeRequested || input.signal?.aborted) return;
       // Start session
       const session = await adapter.startSession({
         runInput: sessionRunInput,
@@ -141,16 +148,21 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         ...(input.structuredResultCapture !== undefined ? { structuredResultCapture: input.structuredResultCapture } : {}),
         ...(scopedModelMemory !== undefined ? { modelMemory: scopedModelMemory } : {})
       });
+      if (closeRequested || input.signal?.aborted) {
+        void session.metadata.catch(() => undefined);
+        await session.close?.();
+        return;
+      }
       activeSession = session;
-      input.onAttemptLaunch?.({ model: profile.model, inferenceSettings: profile.inferenceSettings, startedAt: startedAtIso });
+      launchFacts = { model: profile.model, inferenceSettings: profile.inferenceSettings, startedAt: startedAtIso };
+      input.onAttemptLaunch?.(launchFacts);
 
       let seenTerminal = false;
-      let assistantTurnCount = 0;
-      let toolCallCount = 0;
       let outcome: RunnerSessionMetadata['outcome'] = 'succeeded';
 
       try {
         for await (const rawEvent of session.events) {
+          if (closeRequested || input.signal?.aborted) return;
           // Validate the event
           const parsed = runnerEventSchema.safeParse(rawEvent);
           if (!parsed.success) {
@@ -219,7 +231,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         const endedAtIso = new Date(endedAtMs).toISOString();
         const durationMs = endedAtMs - startedAt;
         // Local outcome takes priority when stream errored; use session metadata otherwise.
-        const resolvedOutcome = outcome !== 'succeeded' ? outcome : (metadata?.outcome ?? outcome);
+        const resolvedOutcome = input.signal?.aborted ? 'cancelled' : outcome !== 'succeeded' ? outcome : (metadata?.outcome ?? outcome);
         let tokenUsage = metadata?.tokenUsage;
         let accountingFailed = false;
         try {
@@ -249,33 +261,26 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         const sessionModel = metadata?.model ?? profile.model;
         const mappedOutcome: RunnerSessionMetadata['outcome'] =
           resolvedOutcome === 'canceled' ? 'cancelled' : resolvedOutcome;
-        // Normalize token counts to the strict TokenBreakdown shape: all four fields
-        // required. The adapter may produce a looser shape (e.g. { input, output, total }
-        // without cacheRead/cacheWrite), so we fill defaults to avoid schema validation
-        // failures when the event is verified at the execution boundary.
-        const normalizedTokens =
-          tokenUsage?.available === true && tokenUsage.tokens !== undefined
-            ? {
-                input: (tokenUsage.tokens as Record<string, unknown>)['input'] as number ?? 0,
-                output: (tokenUsage.tokens as Record<string, unknown>)['output'] as number ?? 0,
-                cacheRead: (tokenUsage.tokens as Record<string, unknown>)['cacheRead'] as number ?? 0,
-                cacheWrite: (tokenUsage.tokens as Record<string, unknown>)['cacheWrite'] as number ?? 0
-              }
-            : undefined;
         cachedSessionMetadata = {
           model: sessionModel,
           inferenceSettings: profile.inferenceSettings,
           startedAt: startedAtIso,
           endedAt: endedAtIso,
           outcome: mappedOutcome,
-          ...(evidence.success ? { usage: evidence.data } : {}),
-          ...(normalizedTokens !== undefined
-            ? { tokens: normalizedTokens, usageAvailable: true }
-            : { usageAvailable: tokenUsage?.available ?? false }),
+          ...usageFields(tokenUsage),
           assistantTurnCount,
           toolCallCount
         };
       }
+    },
+
+    snapshotSessionMetadata(): RunnerSessionMetadata | null {
+      if (cachedSessionMetadata) return cachedSessionMetadata;
+      if (!launchFacts) return null;
+      let tokenUsage: AgentTokenUsage | undefined;
+      try { tokenUsage = activeSession?.getTokenUsage?.(); } catch { /* usage unavailable */ }
+      return { ...launchFacts, endedAt: null, outcome: 'cancelled', ...usageFields(tokenUsage),
+        assistantTurnCount, toolCallCount };
     },
 
     async getSessionMetadata(): Promise<RunnerSessionMetadata | null> {
@@ -283,6 +288,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
     },
 
     async close(): Promise<RunnerCloseResult> {
+      closeRequested = true;
       // Propagate close failures so the entry point can surface
       // runner_close_failed on clean-stream paths. The entry point's catch
       // block already suppresses close errors when a stream error is in flight.
@@ -300,5 +306,18 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
       }
       return { status: 'closed' };
     }
+  };
+}
+
+/** Normalize already-available accounting, keeping missing usage distinct from measured zero. */
+function usageFields(tokenUsage: AgentTokenUsage | undefined) {
+  const evidence = sessionUsageSchema.safeParse(tokenUsage?.usage);
+  const tokens = tokenUsage?.available === true ? tokenUsage.tokens : undefined;
+  return {
+    ...(evidence.success ? { usage: evidence.data } : {}),
+    ...(tokens ? { tokens: {
+      input: tokens.input ?? 0, output: tokens.output ?? 0,
+      cacheRead: tokens.cacheRead ?? 0, cacheWrite: tokens.cacheWrite ?? 0
+    }, usageAvailable: true } : { usageAvailable: tokenUsage?.available ?? false })
   };
 }

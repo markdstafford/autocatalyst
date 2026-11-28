@@ -50,6 +50,7 @@ export const executionTerminalResultEventSchema = z
       })
       .strict()
       .optional(),
+    outcome: z.literal('cancelled').optional(),
     sessionMetadata: executionSessionMetadataSchema.optional()
   })
   .strict();

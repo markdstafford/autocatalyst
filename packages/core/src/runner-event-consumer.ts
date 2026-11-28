@@ -77,6 +77,7 @@ function publicSpecActivity(event: Exclude<ExecutionBoundaryEvent, ExecutionTerm
 }
 
 function mapTerminalToWorkResult(event: ExecutionTerminalResultEvent): RunWorkResult {
+  if (event.outcome === 'cancelled') return { directive: 'cancelled' };
   switch (event.result.directive) {
     case 'advance':
       return {
@@ -111,6 +112,7 @@ export async function consumeRunnerEvents(input: ConsumeRunnerEventsInput): Prom
       if (event.type === 'runner_terminal_result') {
         terminalSeen = true;
         terminalEvent = event;
+        if (event.outcome === 'cancelled') continue;
         const clientEvent: ClientRunEvent = toClientTerminalEvent(event, input.privateSpecResult);
         try {
           await input.eventsStore.append({ scope, event: clientEvent });

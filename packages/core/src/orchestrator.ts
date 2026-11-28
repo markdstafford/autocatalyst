@@ -137,6 +137,7 @@ export class OrchestratorError extends Error {
 // --- Unit of work ---
 
 export interface RunWorkInput {
+  readonly signal?: AbortSignal;
   readonly runId: string;
   readonly run: Run;
   readonly tenant: string;
@@ -147,7 +148,10 @@ export interface RunWorkInput {
   readonly publicationReview?: import('./pr-finalize.js').PublicationReviewSnapshot;
 }
 
+export type CancelledWorkResult = { readonly directive: 'cancelled' };
+
 export type RunWorkResult =
+  | CancelledWorkResult
   | { readonly directive: 'advance'; readonly result?: Readonly<Record<string, unknown>> }
   | { readonly directive: 'needs_input'; readonly question?: string }
   | { readonly directive: 'fail'; readonly reason: string };
@@ -212,6 +216,7 @@ interface DispatchReservation extends DispatchSource {
   readonly resolve: (result: OrchestratedRunResult) => void;
   readonly reject: (error: unknown) => void;
   continuation?: DispatchSource;
+  controller?: AbortController;
 }
 
 type CommitDispatchTransition = (
@@ -740,6 +745,16 @@ export class DefaultOrchestrator implements Orchestrator {
     });
   }
 
+  #signalCommittedCancellation(input: DispatchRunInput): void {
+    try {
+      this.#dispatchReservations.get(this.#mutationKey(input))?.controller?.abort();
+    } catch {
+      this.#logger?.warn('Dispatch cancellation request failed.', {
+        event: 'dispatch_abort_request_failed', runId: input.runId, code: 'abort_request_failed'
+      });
+    }
+  }
+
   async #applyDirectiveUnderLock(input: ApplyOrchestratedDirectiveInput, source?: DispatchSource): Promise<OrchestratedRunResult> {
     const existing = source?.run ?? await this.#runs.findById(input.runId);
     if (existing === null) {
@@ -901,6 +916,7 @@ export class DefaultOrchestrator implements Orchestrator {
       });
     }
 
+    if (input.directive === 'cancel' && state.run.currentStep === 'canceled') this.#signalCommittedCancellation(input);
     await this.#publishEvent({
       runId: state.run.id,
       directive: input.directive as RunStateTransitionKind,
@@ -975,9 +991,15 @@ export class DefaultOrchestrator implements Orchestrator {
       let failure: unknown;
       try {
         result = await this.#dispatchQueue.enqueueForRun(run.id, async () => {
-          const current = await this.#withRunMutation(input, async () => this.#dispatchSourceMatches(reservation));
-          if (!current) throw new StaleDispatchError();
-          return this.#dispatchReserved(input, reservation, apply, commit, commitTransition);
+          const controller = await this.#withRunMutation(input, async () => {
+            if (!await this.#dispatchSourceMatches(reservation)) throw new StaleDispatchError();
+            return reservation.controller = new AbortController();
+          });
+          try {
+            return await this.#dispatchReserved(input, reservation, apply, commit, commitTransition, controller.signal);
+          } finally {
+            if (reservation.controller === controller) delete reservation.controller;
+          }
         });
       } catch (error) {
         const conflict = this.#transitionConflict(error);
@@ -999,6 +1021,7 @@ export class DefaultOrchestrator implements Orchestrator {
         }
       } finally {
         await this.#withRunMutation(input, async (_apply, admit) => {
+          if (this.#dispatchReservations.get(this.#mutationKey(input)) !== reservation) return;
           this.#dispatchReservations.delete(this.#mutationKey(input));
           const next = reservation.continuation;
           if (next !== undefined && await this.#dispatchSourceMatches(next)) await admit(next);
@@ -1031,7 +1054,8 @@ export class DefaultOrchestrator implements Orchestrator {
     source: DispatchSource,
     apply: Orchestrator['applyDirective'],
     commit: CommitDispatchResult,
-    commitTransition: CommitDispatchTransition
+    commitTransition: CommitDispatchTransition,
+    signal: AbortSignal
   ): Promise<OrchestratedRunResult> {
     const { run } = source;
     const repairs = await this.#pullRequestOpenDependencies?.repair?.repository.listByRun(run.id, run.tenant) ?? [];
@@ -1044,7 +1068,9 @@ export class DefaultOrchestrator implements Orchestrator {
       if (repair.state !== 'queued' || step === null || step.id !== repair.currentStepId || step.endedAt !== null) {
         throw new OrchestratorError('invalid_transition', 'The repair occurrence is no longer queued.');
       }
-      return executeRepair({ run, runStep: step }, repair, this.#repairWorker());
+      const result = await executeRepair({ run, runStep: step }, repair, this.#repairWorker(signal));
+      if (signal.aborted) throw new StaleDispatchError();
+      return result;
     }
 
     const stepDefinition = getRunStepDefinition(run.currentStep);
@@ -1100,7 +1126,7 @@ export class DefaultOrchestrator implements Orchestrator {
       const workspace = await resolveWorkspace({ runId: run.id }).catch(() => undefined);
       try {
         const result = await engine.runSpec({
-          run, runId: run.id, tenant: run.tenant, runStep, stepDefinition, workflow, steps, readHead, commitResult: commit,
+          run, runId: run.id, tenant: run.tenant, runStep, stepDefinition, workflow, steps, readHead, commitResult: commit, signal,
           stillOwns: () => this.#dispatchSourceMatches(source),
           ...(workspace ? { workspace } : {}),
           ...(marker?.specAnswer ? { answer: marker.specAnswer } : {}),
@@ -1119,6 +1145,7 @@ export class DefaultOrchestrator implements Orchestrator {
             return result.kind === 'ok' ? result.output : undefined;
           }
         });
+        if (result.directive === 'cancelled' || signal.aborted) throw new StaleDispatchError();
         if (result.directive === 'fail') return fail(result.reason);
         return apply({
           runId: run.id, tenant: run.tenant, directive: result.directive, origin: 'runner',
@@ -1181,6 +1208,7 @@ export class DefaultOrchestrator implements Orchestrator {
         stepDefinition,
         workflow,
         commitResult: commit,
+        signal,
         stillOwns: () => this.#dispatchSourceMatches(source),
         ...(() => {
           for (const prior of [...runSteps].reverse()) {
@@ -1194,6 +1222,7 @@ export class DefaultOrchestrator implements Orchestrator {
         ...(humanGuidance !== undefined ? { humanGuidance } : {})
       });
 
+      if (result.cancelled || signal.aborted) throw new StaleDispatchError();
       if (result.workResult.directive === 'fail') {
         const reason = result.workResult.reason;
         return apply({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason, origin: 'runner' });
@@ -1232,7 +1261,7 @@ export class DefaultOrchestrator implements Orchestrator {
     }
 
     if (run.currentStep === 'implementation.testing_guide') {
-      return this.#dispatchTestingGuide(source, commitTransition);
+      return this.#dispatchTestingGuide(source, commitTransition, signal);
     }
 
     if (this.#unitOfWork === undefined) {
@@ -1287,7 +1316,7 @@ export class DefaultOrchestrator implements Orchestrator {
     const treeSha = integrated && publication?.readTree
       ? await publication.readTree(integrated.workspace, integrated.headSha) : undefined;
     if (treeSha === null) return publicationStop('pr_integration_workspace_unavailable', { safeReason: 'tree_unavailable' });
-    const baseWorkInput: RunWorkInput = { runId: input.runId, run, tenant: input.tenant,
+    const baseWorkInput: RunWorkInput = { runId: input.runId, run, tenant: input.tenant, signal,
       ...(integrated && finalizationStepId ? { publicationReview: {
         occurrenceId: finalizationStepId, candidateSha: integrated.headSha, targetSha: integrated.targetSha,
         ...(treeSha ? { treeSha } : {})
@@ -1296,8 +1325,9 @@ export class DefaultOrchestrator implements Orchestrator {
     const workInput: RunWorkInput = run.currentStep === 'pr.finalize'
       ? { ...baseWorkInput, toolPolicyMode: 'read_only' }
       : baseWorkInput;
+    if (signal.aborted) throw new StaleDispatchError();
     const result = await unitOfWork.run(workInput);
-    if (!await this.#dispatchSourceMatches(source)) throw new StaleDispatchError();
+    if (result.directive === 'cancelled' || signal.aborted || !await this.#dispatchSourceMatches(source)) throw new StaleDispatchError();
     const finalized = result.directive === 'advance' && run.currentStep === 'pr.finalize'
       ? await validatePullRequestFinalizeResult({ runId: input.runId, rawResult: result.result })
       : undefined;
@@ -1472,7 +1502,8 @@ export class DefaultOrchestrator implements Orchestrator {
 
   async #dispatchTestingGuide(
     source: DispatchSource,
-    commitTransition: CommitDispatchTransition
+    commitTransition: CommitDispatchTransition,
+    signal: AbortSignal
   ): Promise<OrchestratedRunResult> {
     const { run, runStep } = source;
     const repository = this.#testingGuides;
@@ -1484,13 +1515,15 @@ export class DefaultOrchestrator implements Orchestrator {
     const authored = previous?.runStepId === runStep.id ? undefined : await authorTestingGuide({
       runId: run.id,
       request: async correction => {
-        if (!await this.#dispatchSourceMatches(source)) throw new StaleDispatchError();
+        if (!await this.#dispatchSourceMatches(source) || signal.aborted) throw new StaleDispatchError();
         if (!this.#unitOfWork) throw new OrchestratorError('persistence_failed', 'No unit of work configured.');
-        return this.#unitOfWork.run({
-          ...scope, run, toolPolicyMode: 'read_only', testingGuidePass: (previous?.revision ?? 0) + 1,
+        const result = await this.#unitOfWork.run({
+          ...scope, run, signal, toolPolicyMode: 'read_only', testingGuidePass: (previous?.revision ?? 0) + 1,
           ...(previous ? { previousTestingGuide: previous } : {}),
           ...(correction ? { testingGuideCorrection: correction } : {})
         });
+        if (result.directive === 'cancelled' || signal.aborted) throw new StaleDispatchError();
+        return result;
       }
     });
     return commitTransition(async apply => {
@@ -1617,6 +1650,9 @@ export class DefaultOrchestrator implements Orchestrator {
       pullRequestId: record.pullRequestId, head: record.headSha, ordinal: record.ordinal, workspaceHold: record.workspaceHold
     });
     if (moved.transition !== undefined) {
+      if (input.nextStep === 'canceled' && moved.transition.run.currentStep === 'canceled') {
+        this.#signalCommittedCancellation({ runId: record.runId, tenant: record.tenant });
+      }
       const source = input.from.currentStepId === null ? null : await this.#runSteps?.findById(input.from.currentStepId);
       await this.#publishEvent({
         runId: record.runId, tenant: record.tenant,
@@ -1629,7 +1665,7 @@ export class DefaultOrchestrator implements Orchestrator {
     return moved;
   }
 
-  #repairWorker(): RepairWorkerDependencies {
+  #repairWorker(signal?: AbortSignal): RepairWorkerDependencies {
     const deps = this.#pullRequestOpenDependencies;
     if (deps?.repair === undefined || deps.publicationGit === undefined || deps.runWorkspaceGit === undefined ||
         this.#runWorkspaceMetadata === undefined) throw new OrchestratorError('invalid_transition', 'Repair dispatch is not available.');
@@ -1661,12 +1697,13 @@ export class DefaultOrchestrator implements Orchestrator {
           workspace: await this.#resolveWorkspaceContext({ runId: run.id }),
           ...(typeof guidance === 'string' ? { humanGuidance: guidance } : {}),
           ciRepair: { failedHead: repair.headSha, failures: repair.failures, prBinding }, stillOwns,
+          ...(signal ? { signal } : {}),
           ...(checkpoint.success ? { priorCheckpoint: checkpoint.data } : {})
         });
       },
       review: async (run, publicationReview) => {
         if (this.#unitOfWork === undefined) throw new Error('repair_review_not_configured');
-        return this.#unitOfWork.run({ run, runId: run.id, tenant: run.tenant, toolPolicyMode: 'read_only', publicationReview } as RunWorkInput);
+        return this.#unitOfWork.run({ run, runId: run.id, tenant: run.tenant, toolPolicyMode: 'read_only', publicationReview, ...(signal ? { signal } : {}) });
       }
     };
   }

@@ -1270,3 +1270,21 @@ describe('createConvergenceEngine — reviewer result tolerance', () => {
     expect(out.checkpointResult.routing.warningCode).toBe('role_distinct_unsatisfied');
   });
 });
+
+it('stops the basic build between rounds when a tenant-scoped read is terminal', async () => {
+  const dispatcher = new ScriptedDispatcher([
+    implResultAdvance(1),
+    reviewerResultDispatch(1, { status: 'findings', findings: [{ title: 'Fix it', body: 'Required change.', severity: 'blocker' }] })
+  ]);
+  const readRun = vi.fn(async () => ({ ...fakeRun, currentStep: 'canceled', terminal: true }));
+  const engine = createConvergenceEngine({
+    dispatcher, git: new StubGit(), feedback: new InMemoryFeedbackRepo(), runSteps: new StubRunStepRepo(),
+    routing: makeRouting(true), readRun, getPolicy: () => ({ maxRounds: 3, depth: 'build_only' })
+  });
+  expect(await engine.run({
+    runId: fakeRun.id, run: fakeRun, tenant: fakeRun.tenant, runStep: fakeRunStep,
+    stepDefinition: stepDefBoth, workflow: fakeWorkflow
+  })).toEqual({ cancelled: true, workResult: { directive: 'cancelled' } });
+  expect(dispatcher.calls.map(call => call.role)).toEqual(['implementer', 'reviewer']);
+  expect(readRun).toHaveBeenCalledExactlyOnceWith({ runId: fakeRun.id, tenant: fakeRun.tenant });
+});

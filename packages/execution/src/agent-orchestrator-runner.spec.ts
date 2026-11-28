@@ -1155,3 +1155,27 @@ describe('createAgentOrchestratorRunner', () => {
     });
   });
 });
+
+it('closes a late provider handle without reporting or reading a new session', async () => {
+  const { options } = makeOrchestratorOptions();
+  let release!: (session: AgentProviderSession) => void;
+  const session = new Promise<AgentProviderSession>(resolve => { release = resolve; });
+  let enter!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const runner = createAgentOrchestratorRunner({
+    ...options,
+    adapter: { ...options.adapter, startSession() { enter(); return session; } }
+  });
+  const onAttemptLaunch = vi.fn();
+  const stream = collectEvents(runner, { ...makeRunInput(), onAttemptLaunch });
+  await entered;
+  await runner.close();
+  const read = vi.fn();
+  const close = vi.fn().mockResolvedValue(undefined);
+  release({ events: { [Symbol.asyncIterator]: read }, close, metadata: Promise.resolve(makeDefaultMetadata()) });
+  expect(await stream).toEqual([]);
+  expect(close).toHaveBeenCalledOnce();
+  expect(read).not.toHaveBeenCalled();
+  expect(onAttemptLaunch).not.toHaveBeenCalled();
+  expect(runner.snapshotSessionMetadata?.()).toBeNull();
+});

@@ -1514,3 +1514,71 @@ describe('createLayeredConvergenceEngine — open human implementation feedback'
     expect(reviewerFeedback?.status).toBe('resolved');
   });
 });
+
+it.each(['continue', 'interrupt implementer', 'interrupt reviewer', 'terminal read', 'new altitude'] as const)(
+  'honors build round and role boundaries: %s', async scenario => {
+    const controller = new AbortController();
+    const interruptedRole = scenario === 'interrupt implementer' ? 'implementer' :
+      scenario === 'interrupt reviewer' ? 'reviewer' : undefined;
+    const signal = scenario === 'terminal read' || scenario === 'new altitude' ? undefined : controller.signal;
+    const runSteps = new StubRunStepRepo();
+    const checkpoint = vi.spyOn(runSteps, 'updateCheckpoint');
+    const readRun = vi.fn(async () => scenario === 'terminal read' || scenario === 'new altitude'
+      ? { ...fakeRun, terminal: true, currentStep: 'canceled' } : fakeRun);
+    const firstAltitude = scenario === 'new altitude' ? 'layout' : 'build';
+    const findings = (round: number): ReviewerResult => ({
+      status: 'findings', findings: Array.from({ length: 3 - round }, (_, index) => ({
+        title: `Fix round ${round} finding ${index}`, body: `Required change ${round}.`, severity: 'blocker'
+      }))
+    });
+    const scripts = new ScriptedDispatcher([
+      implResultAdvance(1, firstAltitude),
+      reviewerResultDispatch(1, firstAltitude, scenario === 'new altitude' ? { status: 'satisfied' } : findings(1)),
+      implResultAdvance(2, 'build'), reviewerResultDispatch(2, 'build', findings(2)),
+      implResultAdvance(3, 'build'), reviewerResultDispatch(3, 'build', { status: 'satisfied' })
+    ]);
+    let entered!: () => void;
+    let release!: () => void;
+    const launch = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const runRole = vi.fn<ReviewedRoleDispatcher['runRole']>(async input => {
+      expect(input.signal).toBe(signal);
+      if (input.role === interruptedRole) {
+        entered();
+        await gate;
+        return { workResult: { directive: 'cancelled' } };
+      }
+      const result = await scripts.runRole(input);
+      if (input.role !== 'implementer') return result;
+      return { ...result, dispositions: input.reviewContext?.requiredDispositions?.map(({ feedbackId }) => ({
+        feedbackId, disposition: 'fixed', summary: 'Fixed in this round.'
+      })) ?? [] };
+    });
+    const engine = createLayeredConvergenceEngine({
+      dispatcher: { runRole }, git: new StubGit(), feedback: new InMemoryFeedbackRepo(), runSteps,
+      routing: makeRouting(true), getPolicy: () => policyOf(firstAltitude === 'layout' ? 'layout' : 'build_only'), readRun
+    });
+    const work = engine.run({
+      runId: fakeRun.id, run: fakeRun, tenant: fakeRun.tenant, runStep: fakeRunStep, stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow, workspace, ...(signal ? { signal } : {})
+    });
+    if (interruptedRole) {
+      await launch;
+      controller.abort();
+      release();
+    }
+    const result = await work;
+    if (scenario === 'continue') {
+      expect(result).toMatchObject({ workResult: { directive: 'advance' }, checkpointResult: { outcome: 'converged' } });
+      expect(result.checkpointResult?.rounds).toHaveLength(3);
+      expect(runRole).toHaveBeenCalledTimes(6);
+      expect(checkpoint).toHaveBeenCalledTimes(3);
+      expect(readRun).toHaveBeenCalledTimes(2);
+    } else {
+      expect(result).toEqual({ cancelled: true, workResult: { directive: 'cancelled' } });
+      expect(runRole).toHaveBeenCalledTimes(interruptedRole === 'implementer' ? 1 : 2);
+      expect(checkpoint).toHaveBeenCalledTimes(interruptedRole ? 0 : 1);
+      if (interruptedRole) expect(readRun).not.toHaveBeenCalled();
+      else expect(readRun).toHaveBeenCalledExactlyOnceWith({ runId: fakeRun.id, tenant: fakeRun.tenant });
+    }
+  });

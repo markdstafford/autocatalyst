@@ -7,7 +7,7 @@
 - Runtime Micromanager source, pin, synchronization, fidelity checks and E2E handoff: [micromanager-runtime.md](micromanager-runtime.md).
 - Web client design system (tokens, shell dimensions, alignment rules, component rules): [design-system.md](design-system.md).
 
-Last updated: 2026-11-27 (reviewed conversation foundations, #195).
+Last updated: 2026-11-27 (active dispatch cancellation, #154).
 
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
@@ -56,6 +56,15 @@ Last updated: 2026-11-27 (reviewed conversation foundations, #195).
 - `packages/claude-agent-adapter/src/claude-non-persistence.live.spec.ts` is the opt-in native fixture for the bundled SDK and subscription CLI. It checks both history namespaces and uses the shipped fresh options as a positive control, without setting a production capability flag.
 - `packages/execution/src/internal/workspace-conversation-custody.ts` and `workspace-pruner.ts` own private-writer markers, the exclusive native history routing lease, and guarded reclamation. `workspace.ts:createWorkspaceLifecycle` shares that pruner across startup/recovery, reset, teardown, and scoped retirement. `publication-git.ts` materializes final review source and a target-to-candidate diff from pinned objects, not from worktree contents.
 - `apps/control-plane/src/reviewed-live-conversations.ts` owns exclusive leases for ephemeral Claude SDK queries and Codex App Server threads. `reviewed-live-conversations.live.spec.ts` verifies actual provider recall through the production reviewed-dispatch port. Disk-backed retention still requires the separate [supervisor qualification](reviewed-agent-conversations.md).
+
+## Active dispatch cancellation (#154)
+
+- `packages/core/src/orchestrator.ts` registers the controller on the tenant/run reservation under the mutation lock at queue admission. The regular and repair-owned cancel paths signal after commit. An identity-checked `finally` retires the controller. Stale dispatch and occurrence guards still own result discard.
+- `RunWorkInput.signal` reaches ordinary and testing-guide sessions, reviewed spec roles, and repair build/review. `ConvergenceEngineInput.signal` is inherited by reviewed spec convergence; the basic and layered engines check it around each role and consult a tenant-scoped run reader before later rounds, including altitude changes. `apps/control-plane/src/server.ts` wires the production reader to the run repository.
+- `execution-run-unit-of-work.ts` forwards the signal across retries and fallback to the delegating entry point in `server.ts` and each per-attempt `ExecutionEntryPointInput`. `packages/execution/src/execution-entry-point.ts` races runner reads and terminal validation against abort, and closes without waiting on an interrupted stream. `agent-orchestrator-runner.ts` closes a late handle before reading it and exposes only already-available session facts.
+- `runner-event-consumer.ts` treats the internal `cancelled` terminal as a discard, not SSE failure activity. The unit of work records a history row only when the terminal has launch metadata; `reviewed-conversation.ts` retires canceled custody without waiting for writer release. `pr-repair-worker.ts` keeps a host hold when this return does not prove the writer drained.
+- `claude-agent-adapter.ts` forwards its session signal to every launch and bridges fresh and retained queries to a query-local SDK controller. In-memory queries close on active-turn abort and survive ordinary completed turns. Codex still uses its existing launch and auth signals.
+- Focused HTTP coverage: `apps/control-plane/src/spec-convergence.integration.spec.ts` blocks each provider launch and awaits dispatch completion before releasing it. See [controller ownership](../decisions/dispatch-cancellation.md) and the [commands concept proposal](commands-cancel-proposal.md).
 
 ## Run operator actions (#153)
 
@@ -111,7 +120,7 @@ Last updated: 2026-11-27 (reviewed conversation foundations, #195).
 - `run-progress-projection.ts` and `run-progress.tsx` mark the current phase or last nonterminal stop position, and put the actual current step on a separate line. Only workflow data supplies phase labels, path and gate positions.
 - `run-activity-path.ts` walks ordered occurrences with a forward-only path cursor; it derives skipped/unreached rows, preserves revisions and superseded stops, and matches sessions to same-step attempt time windows. `run-activity.tsx` owns the visible Activity clock, disclosures and marker/session display.
 - `run-activity-event-text.ts` is the exhaustive plain-text formatter, including refresh-only transitions. `run-activity-buffer.ts` pins events to occurrence IDs using timestamps and transition/recovery hints, tracks affected attempts on eviction, and enforces `RUN_ACTIVITY_EVENTS_PER_RUN = 500` with a time/ID replay cutoff.
-- `apps/control-plane/src/fake/scripted-launch.ts` claims `delays/issue-<n>.json` once, emits per-second native progress and aborts on session close or stale step/failed run; operator cancel allows the scripted session to finish. `scripted-results.ts` builds the native prelude. `packages/core/src/runner-event-consumer.ts` [projects content-free activity for private spec roles](../decisions/private-spec-activity-projection.md), through the same normal runner publication path.
+- `apps/control-plane/src/fake/scripted-launch.ts` claims `delays/issue-<n>.json` once, emits per-second native progress and aborts on session close or a stale step; operator cancel closes the active session. `scripted-results.ts` builds the native prelude. `packages/core/src/runner-event-consumer.ts` [projects content-free activity for private spec roles](../decisions/private-spec-activity-projection.md), through the same normal runner publication path.
 - Verify with `pnpm nx test web`, the control-plane fake-mode `activity-stream.integration.spec.ts`, and `pnpm nx e2e web` (served build: `apps/web/e2e/progress-and-activity.spec.ts`, plus min/max progress geometry in `run-detail.spec.ts`).
 - Component coverage in `run-activity.spec.tsx` checks marker glyphs, color tokens, and labels against explicit occurrences and placeholders, plus all expanded session fields. `run-progress.spec.tsx` covers three-phase fills and full labels, arbitrary four-phase order, and seven-phase compact labels. Run them from `apps/web` with `pnpm exec vitest run src/runs/run-activity.spec.tsx src/runs/run-progress.spec.tsx`; point `TMPDIR` at writable scratch if the sandbox denies the OS temp directory.
 

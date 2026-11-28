@@ -106,6 +106,7 @@ import {
   createAgentConnection,
   createAgentRunnerFactory,
   createDirectCallFactory,
+  cancellationTerminal,
   createExecutionEntryPoint,
   createExecutionMaterializer,
   createSpecAuthorResultContract,
@@ -817,6 +818,10 @@ export function createDelegatingExecutionEntryPoint(input: {
 
   return {
     async *execute(entryInput: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+      if (entryInput.signal?.aborted) {
+        yield cancellationTerminal(entryInput);
+        return;
+      }
       // Prefer the role injected into task inputs by the convergence dispatcher;
       // fall back to the resolveRole callback for non-convergence steps.
       const taskInputRole = entryInput.context.task?.inputs?.['role'];
@@ -834,7 +839,14 @@ export function createDelegatingExecutionEntryPoint(input: {
         ...(prepare ? { onResolvedProfile: profile => { resolvedProfile = profile; } } : {}),
         ...(resolvedRole !== undefined ? { role: resolvedRole } : {})
       };
-      const runner = await input.factory.createRunner(runnerFactoryInput);
+      let runner;
+      try {
+        runner = await input.factory.createRunner(runnerFactoryInput);
+      } catch (error) {
+        if (!entryInput.signal?.aborted) throw error;
+        yield cancellationTerminal(entryInput);
+        return;
+      }
       const perRunEntryPoint = createExecutionEntryPoint({
         runner,
         materialize: async context => {
@@ -1125,7 +1137,7 @@ export async function createControlPlaneServer(
         paths: fakeStatePaths,
         isStillRunning: async (runId, step) => {
           const run = await domainReposFakeRef.current?.runs.findById(runId);
-          // Cancel leaves the session alone so fake mode can expose its late result too.
+          // The session signal handles operator cancel. Poll for other stale steps.
           return run != null && (run.currentStep === 'canceled' || (!run.terminal && run.currentStep === step));
         },
         resolveIssueNumber: async (runId) => {
@@ -1927,6 +1939,10 @@ export async function createControlPlaneServer(
         git: runWorkspaceGit,
         feedback: domainRepos.feedback,
         runSteps: domainRepos.runSteps,
+        readRun: async ({ tenant, runId }) => {
+          const run = await domainRepos.runs.findById(runId);
+          return run?.tenant === tenant ? run : null;
+        },
         routing: convergenceRoutingResolver,
         getPolicy: getStepConvergencePolicy,
         logger: {

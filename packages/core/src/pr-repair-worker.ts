@@ -1,5 +1,6 @@
 import type { JsonValue, PullRequest, Run, RunStep } from '@autocatalyst/api-contract';
 import type { ConvergenceEngineResult } from './convergence-engine.js';
+import { StaleDispatchError } from './dispatch-result-commits.js';
 import { buildConvergenceEscalationPause } from './convergence-checkpoint.js';
 import { buildPullRequestFinalizeCheckpoint, type PublicationReviewSnapshot } from './pr-finalize.js';
 import { validatePullRequestFinalizeResult } from './pr-finalize-result-validation.js';
@@ -72,6 +73,7 @@ export async function executeRepair(
   let active = attempt;
   let result = start;
   let owned = false;
+  let interrupted = false;
   const move = async (input: Omit<RepairMove, 'from' | 'now'>) => {
     const moved = await deps.transition({ ...input, from: active, now: deps.clock() });
     if (moved === null) return false;
@@ -120,6 +122,7 @@ export async function executeRepair(
     const build = await deps.build(result.run, result.runStep, { ...active, failures: initial.failures }, stillOwns, {
       repository: workspace.repository.toLowerCase(), id: pr.id, number: pr.number, branch: workspace.branch
     });
+    if (build.cancelled) { interrupted = true; throw new StaleDispatchError(); }
     if (!await stillOwns()) return result;
     const built = await deps.git.readCandidate(workspace);
     if (built === null) return await stop('repair_workspace_not_ready');
@@ -160,6 +163,7 @@ export async function executeRepair(
         occurrenceId: result.runStep.id, candidateSha: integration.headSha, targetSha: integration.targetSha,
         ...(treeSha ? { treeSha } : {})
       });
+      if (review.directive === 'cancelled') { interrupted = true; throw new StaleDispatchError(); }
       if (!await stillOwns()) return result;
       if (review.directive === 'needs_input') return await stop('repair_final_review_blocked');
       if (review.directive !== 'advance') return await stop('repair_final_review_failed');
@@ -217,14 +221,16 @@ export async function executeRepair(
       await move({ state: 'pushed', nextStep: 'pr.human_review' });
       return result;
     }
-  } catch {
+  } catch (cause) {
+    if (cause instanceof StaleDispatchError) throw cause;
     if (await stillOwns()) {
       const publishing = active.state === 'publishing';
       return await stop(publishing ? 'repair_push_unverified' : 'repair_execution_failed', undefined, publishing);
     }
     return result;
   } finally {
-    if (owned) {
+    // An interrupted provider can still touch the workspace. Keep the host hold.
+    if (owned && !interrupted) {
       const rows = await deps.repository.listByRun(active.runId, active.tenant);
       if (rows.some(row => row.workspaceHold && row.outcomeStepId === active.currentStepId && row.ownerEpoch === deps.epoch)) {
         await deps.repository.clearDrainedHold(active);

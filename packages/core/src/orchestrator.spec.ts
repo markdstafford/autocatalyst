@@ -3209,6 +3209,113 @@ describe('run operator transitions', () => {
     expect(record).toHaveBeenCalledTimes(attempts);
   });
 
+  it.each(['commit', 'external terminal re-read', 'abort request fails'] as const)(
+    'discards a cancellation result without failure recovery: %s', async scenario => {
+      const live = liveRun('implementation.build', [makeRunStep({ step: 'implementation.build', phase: 'implementation' })]);
+      const entered = makeBarrier();
+      const release = makeBarrier();
+      const logger = { info: vi.fn(), warn: vi.fn() };
+      const { publisher, events } = makeRecordingPublisher();
+      const recoverFailedRun = vi.fn();
+      let signal: AbortSignal | undefined;
+      const { orchestrator } = makeOrchestrator({
+        ...live, runs: { ...live.runs, recoverFailedRun }, logger, events: publisher,
+        unitOfWork: { async run(args) {
+          signal = args.signal;
+          entered.release();
+          await release.promise;
+          return { directive: 'cancelled' };
+        } }
+      });
+      const dispatch = orchestrator.dispatch(input);
+      await entered.promise;
+      expect(signal?.aborted).toBe(false);
+      try {
+        await expect(orchestrator.applyDirective({ ...input, tenant: 'another-tenant', directive: 'cancel' }))
+          .rejects.toMatchObject({ code: 'forbidden' });
+        expect(signal?.aborted).toBe(false);
+        if (scenario === 'external terminal re-read') {
+          live.state.changeStep('canceled', true);
+          live.history.push(makeRunStep({ step: 'canceled', phase: null }));
+        } else {
+          const abort = scenario === 'abort request fails' ? vi.spyOn(AbortController.prototype, 'abort')
+            .mockImplementationOnce(() => { throw new Error('do not publish'); }) : undefined;
+          try {
+            // applyDirective and cancelRun share the same guarded commit.
+            const canceled = abort ? await orchestrator.cancelRun(input) :
+              await orchestrator.applyDirective({ ...input, directive: 'cancel', origin: 'human' });
+            expect(canceled.run.currentStep).toBe('canceled');
+            expect(signal?.aborted).toBe(!abort);
+          } finally { abort?.mockRestore(); }
+        }
+      } finally { release.release(); }
+      await expect(dispatch).resolves.toMatchObject({ run: { currentStep: 'canceled' } });
+      expect(recoverFailedRun).not.toHaveBeenCalled();
+      expect(live.record.mock.calls.map(([write]) => write.currentStep))
+        .toEqual(scenario === 'external terminal re-read' ? [] : ['canceled']);
+      expect(events.map(event => event.transition.directive)).toEqual(scenario === 'external terminal re-read' ? [] : ['cancel']);
+      expect(logger.info).toHaveBeenCalledExactlyOnceWith('dispatch_result_discarded', { runId: input.runId, step: 'implementation.build' });
+      if (scenario === 'abort request fails') {
+        expect(logger.warn).toHaveBeenCalledExactlyOnceWith('Dispatch cancellation request failed.', {
+          event: 'dispatch_abort_request_failed', runId: input.runId, code: 'abort_request_failed'
+        });
+      } else expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+  it('signals only the matching active dispatch', async () => {
+    const step = 'implementation.build';
+    const first = liveRun(step, [makeRunStep({ step, phase: 'implementation' })]);
+    const second = { ...makeRun({ currentStep: step }), id: 'run_2' };
+    const secondStep = makeRunStep({ step, phase: 'implementation', runId: second.id });
+    const entered = makeBarrier();
+    const release = makeBarrier();
+    const signals = new Map<string, AbortSignal>();
+    const { orchestrator } = makeOrchestrator({
+      runs: { ...first.runs,
+        findById: async id => id === second.id ? second : first.state.run,
+        findLatestOpenRunStep: async ({ runId }) => runId === second.id ? secondStep : first.state.open()
+      },
+      autoDispatch: { enabled: false },
+      dispatchQueue: new RunDispatchQueue({ maxConcurrent: 2 }),
+      unitOfWork: { async run(args) {
+        signals.set(args.runId, args.signal!);
+        if (signals.size === 2) entered.release();
+        await release.promise;
+        if (args.signal?.aborted) return { directive: 'cancelled' };
+        throw new Error('release second run without advancing it');
+      } }
+    });
+    const firstWork = orchestrator.dispatch(input);
+    const secondWork = expect(orchestrator.dispatch({ ...input, runId: second.id })).rejects.toThrow('release second run');
+    await entered.promise;
+    try {
+      await orchestrator.cancelRun(input);
+      expect(signals.get(input.runId)?.aborted).toBe(true);
+      expect(signals.get(second.id)?.aborted).toBe(false);
+    } finally { release.release(); }
+    await firstWork;
+    await secondWork;
+  });
+
+  it.each(['completion', 'failure'] as const)('removes the active controller after %s', async outcome => {
+    const live = liveRun('implementation.build', [makeRunStep({ step: 'implementation.build', phase: 'implementation' })]);
+    let signal: AbortSignal | undefined;
+    const { orchestrator } = makeOrchestrator({
+      ...live, autoDispatch: { enabled: false },
+      unitOfWork: { async run(args) {
+        signal = args.signal;
+        if (outcome === 'failure') throw new Error('script failed');
+        return { directive: 'advance' };
+      } }
+    });
+    const dispatch = orchestrator.dispatch(input);
+    if (outcome === 'failure') await expect(dispatch).rejects.toThrow('script failed');
+    else await dispatch;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    await orchestrator.cancelRun(input);
+    expect(signal?.aborted).toBe(false);
+  });
+
   it('drops a result bound to a previous visit of the same step', async () => {
     const live = liveRun('spec.author', [makeRunStep({ id: 'old', step: 'spec.author', phase: 'spec' })]);
     const release = makeBarrier();

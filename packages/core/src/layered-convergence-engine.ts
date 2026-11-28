@@ -38,6 +38,10 @@ import type { ResolvedStepConvergencePolicy } from './convergence-policy.js';
 import { getStepConvergencePolicy, getImplementationAltitudeLadder } from './convergence-policy.js';
 import type { RunWorkResult, WorkspaceContext } from './orchestrator.js';
 import {
+  cancelledConvergence,
+  stopConvergenceRound,
+  type ReadConvergenceRun,
+  type ConvergenceWorkResult,
   findingSignature,
   isBlockingFinding,
   detectOscillation,
@@ -50,6 +54,7 @@ import {
 } from './convergence-engine.js';
 
 export interface LayeredConvergenceEngineOptions {
+  readonly readRun?: ReadConvergenceRun;
   readonly dispatcher: ReviewedRoleDispatcher;
   readonly git: RunWorkspaceGitPort;
   readonly feedback: FeedbackRepository;
@@ -159,6 +164,7 @@ function collectOpenFeedbackIds(
 }
 
 interface AltitudeLoopState {
+  startedRound: boolean;
   readonly allRounds: ConvergenceRoundRecord[];
   readonly acceptedCheckpoints: AltitudeCheckpointRef[];
   lastImplementerLastPosition: string | undefined;
@@ -173,7 +179,8 @@ interface AltitudeLoopState {
 type AltitudeLoopOutcome =
   | { readonly kind: 'accepted'; readonly resolvedWorkspace: WorkspaceContext | undefined }
   | { readonly kind: 'escalated'; readonly reason: 'max_rounds' | 'oscillation' }
-  | { readonly kind: 'failed'; readonly workResult: RunWorkResult };
+  | { readonly kind: 'failed'; readonly workResult: ConvergenceWorkResult }
+  | { readonly kind: 'cancelled' };
 
 export function createLayeredConvergenceEngine(
   options: LayeredConvergenceEngineOptions
@@ -303,7 +310,10 @@ export function createLayeredConvergenceEngine(
       }
     };
 
+    const cancelled = { kind: 'cancelled' } as const;
     for (let roundNumber = 1; roundNumber <= maxRounds; roundNumber++) {
+      if (await stopConvergenceRound(input, state.startedRound, options.readRun)) return cancelled;
+      state.startedRound = true;
       if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
       // 1) Implementer dispatch
       const implReviewContext: ReviewContext = {
@@ -332,11 +342,13 @@ export function createLayeredConvergenceEngine(
           : {})
       };
 
+      if (input.signal?.aborted) return cancelled;
       const implDispatch: ReviewedRoleDispatchResult = await options.dispatcher.runRole({
         runId: input.runId,
         run: input.run,
         tenant: input.tenant,
         role: 'implementer',
+        ...(input.signal ? { signal: input.signal } : {}),
         reviewedOccurrence: { id: input.runStep.id, workflow: input.workflow,
           ...(input.stillOwns ? { stillOwns: input.stillOwns } : {}) },
         ...(input.ciRepair !== undefined ? { ciRepair: input.ciRepair } : {}),
@@ -347,7 +359,9 @@ export function createLayeredConvergenceEngine(
         route: routes.implementerRoute
       });
 
+      if (implDispatch.workResult.directive === 'cancelled' || input.signal?.aborted) return cancelled;
       if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
+      if (input.signal?.aborted) return cancelled;
       if (implDispatch.workResult.directive === 'needs_input') {
         if (input.ciRepair !== undefined && resolvedWorkspace !== undefined) {
           await options.git.commitFiles({
@@ -461,11 +475,14 @@ export function createLayeredConvergenceEngine(
       }
 
       // 4) Reviewer dispatch (read-only)
+      if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
+      if (input.signal?.aborted) return cancelled;
       const reviewDispatch: ReviewedRoleDispatchResult = await options.dispatcher.runRole({
         runId: input.runId,
         run: input.run,
         tenant: input.tenant,
         role: 'reviewer',
+        ...(input.signal ? { signal: input.signal } : {}),
         reviewedOccurrence: { id: input.runStep.id, workflow: input.workflow,
           ...(input.stillOwns ? { stillOwns: input.stillOwns } : {}) },
         ...(input.ciRepair !== undefined ? { ciRepair: input.ciRepair } : {}),
@@ -485,7 +502,9 @@ export function createLayeredConvergenceEngine(
         routeProfileId: routes.reviewerRoute.profileId,
         route: routes.reviewerRoute
       });
+      if (reviewDispatch.workResult.directive === 'cancelled' || input.signal?.aborted) return cancelled;
       if (input.stillOwns && !await input.stillOwns()) throw new Error('repair_claim_retired');
+      if (input.signal?.aborted) return cancelled;
       state.lastReviewerLastPosition =
         reviewDispatch.lastPosition ?? state.lastReviewerLastPosition;
       if (reviewDispatch.modelPrincipal !== undefined) {
@@ -513,6 +532,7 @@ export function createLayeredConvergenceEngine(
         };
       }
       const reviewerValidation = await validateReviewerResult({
+        ...(input.signal ? { signal: input.signal } : {}),
         runId: input.runId,
         step: input.stepDefinition.id,
         rawResult,
@@ -533,6 +553,7 @@ export function createLayeredConvergenceEngine(
         };
       }
       const reviewerResult: ReviewerResult = reviewerValidation.value;
+      if (input.signal?.aborted) return cancelled;
       const reviewerFindings: readonly ReviewerFinding[] =
         reviewerResult.status === 'findings' ? reviewerResult.findings : [];
 
@@ -728,6 +749,7 @@ export function createLayeredConvergenceEngine(
         currentAltitude: altitude,
         acceptedCheckpoints: state.acceptedCheckpoints
       });
+      if (input.signal?.aborted) return cancelled;
       try {
         await commitConvergenceEffect(input.commitResult, () => options.runSteps.updateCheckpoint({
           runStepId: input.runStep.id,
@@ -745,6 +767,7 @@ export function createLayeredConvergenceEngine(
         });
       }
 
+      if (input.signal?.aborted) return cancelled;
       if (noBlocking) {
         await addressFixedHumanFeedback();
         return { kind: 'accepted', resolvedWorkspace };
@@ -756,6 +779,7 @@ export function createLayeredConvergenceEngine(
   }
 
   async function runEngine(input: ConvergenceEngineInput): Promise<ConvergenceEngineResult> {
+    if (input.signal?.aborted) return cancelledConvergence;
     const roles = input.stepDefinition.roles;
     if (!roles.includes('implementer') || !roles.includes('reviewer')) {
       throw new ConvergenceEngineConfigurationError(
@@ -779,6 +803,7 @@ export function createLayeredConvergenceEngine(
     });
 
     const state: AltitudeLoopState = {
+      startedRound: false,
       allRounds: [],
       acceptedCheckpoints: [],
       lastImplementerLastPosition: undefined,
@@ -822,6 +847,7 @@ export function createLayeredConvergenceEngine(
         humanFeedback: altitude === 'build' ? openHumanImplFeedback : []
       });
 
+      if (altResult.kind === 'cancelled' || input.signal?.aborted) return cancelledConvergence;
       if (altResult.kind === 'failed') {
         const checkpoint = buildLayeredCheckpoint({
           step: input.stepDefinition.id,
@@ -934,6 +960,7 @@ export function createLayeredConvergenceEngine(
     await resolveEngineReviewerFeedback(state.createdReviewerFeedbackIds, input.tenant,
       guardConvergenceFeedback(options.feedback, input.commitResult));
 
+    if (input.signal?.aborted) return cancelledConvergence;
     const checkpoint = buildLayeredCheckpoint({
       step: input.stepDefinition.id,
       maxRounds,
@@ -956,6 +983,15 @@ export function createLayeredConvergenceEngine(
     };
   }
 
-  return { run: runEngine, runSpec: input => runSpecConvergence(input, options) };
+  return {
+    async run(input) {
+      try { return await runEngine(input); }
+      catch (error) {
+        if (input.signal?.aborted) return cancelledConvergence;
+        throw error;
+      }
+    },
+    runSpec: input => runSpecConvergence(input, options)
+  };
 }
 
