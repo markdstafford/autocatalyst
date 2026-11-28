@@ -26,19 +26,22 @@ export interface RowTitle {
 }
 
 /**
- * The row's title and number. With a tracked issue, the issue title and
- * `#<number>` are used; without one, the run id stands in for both and no issue is
- * assumed.
+ * The API projects the topic title independently of the linked issue's title.
  */
+export function runDisplayTitle(run: Run): string {
+  return run.title ?? run.trackedIssue?.title ?? run.id;
+}
+
+/** Row title with a secondary issue number (or the run identifier). */
 export function rowTitle(run: Run): RowTitle {
   if (run.trackedIssue !== undefined) {
     return {
-      title: run.trackedIssue.title,
+      title: runDisplayTitle(run),
       number: `#${run.trackedIssue.number}`,
       hasIssue: true
     };
   }
-  return { title: run.id, number: run.id, hasIssue: false };
+  return { title: runDisplayTitle(run), number: run.id, hasIssue: false };
 }
 
 // ---------------------------------------------------------------------------

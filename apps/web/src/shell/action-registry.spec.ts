@@ -5,8 +5,11 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import { makeRun } from '../runs/run-fixtures.js';
 import {
   ACTIONS,
+  RUN_ACTIONS,
+  actionApplies,
   actionKeyCaps,
   actionTooltipKey,
   getAction,
@@ -29,10 +32,45 @@ function makeEvent(partial: Partial<ShellKeyEvent> & { key: string }): ShellKeyE
 const PLAIN: ActionContext = { isMac: false, textEntry: false, overlayLayerOpen: false, listFocused: false, route: 'runs', shortcutsOpen: true };
 const IN_LIST: ActionContext = { ...PLAIN, listFocused: true, canSelectNext: true, canSelectPrevious: true };
 
+describe('run action eligibility', () => {
+  it.each([
+    ['in_progress', false, false, ['Cancel', 'Rename']],
+    ['in_progress', false, true, ['Cancel', 'Rename', 'Set step']],
+    ['done', false, false, ['Archive', 'Rename']],
+    ['failed', false, false, ['Recover', 'Archive', 'Rename']],
+    ['canceled', false, false, ['Archive', 'Rename']],
+    ['done', true, false, ['Unarchive', 'Rename']],
+    ['failed', true, false, ['Unarchive', 'Rename']],
+    [undefined, false, false, []]
+  ] as const)('uses the same matrix for %s (archived=%s, history=%s)', (status, archived, hasStepCandidates, expected) => {
+    const run = status === undefined ? undefined : {
+      ...makeRun({ status }), ...(archived ? { archivedAt: '2026-01-02T00:00:00Z' } : {})
+    };
+    const ctx = { ...PLAIN, ...(run === undefined ? {} : { run }), hasStepCandidates };
+    expect(RUN_ACTIONS.filter(action => actionApplies(action, ctx)).map(action => action.name)).toEqual(expected);
+    expect(RUN_ACTIONS.filter(action => action.keys.some(([chord]) => matchAction(
+      makeEvent({ key: chord.key, shiftKey: chord.shift === true }), ctx
+    ) === action.id)).map(action => action.name)).toEqual(expected);
+  });
+
+  it('guards layers, text entry, modifiers and archive navigation without a run', () => {
+    const event = makeEvent({ key: 'A', shiftKey: true });
+    expect(matchAction(event, PLAIN)).toBe('show-archived-runs');
+    expect(matchAction(event, { ...PLAIN, archivedOnly: true })).toBeUndefined();
+    expect(matchAction(event, { ...PLAIN, overlayLayerOpen: true })).toBeUndefined();
+    expect(matchAction(event, { ...PLAIN, textEntry: true })).toBeUndefined();
+    expect(matchAction({ ...event, metaKey: true }, PLAIN)).toBeUndefined();
+    expect(actionTooltipKey('cancel-run', true)).toBe('⇧X');
+    expect(actionTooltipKey('cancel-run', false)).toBe('Shift+X');
+  });
+});
+
 describe('registry shape', () => {
   it('declares all shell and selection actions once', () => {
     const ids = ACTIONS.map((a) => a.id).sort();
     expect(ids).toEqual([
+      'archive-run',
+      'cancel-run',
       'close-layer',
       'create-view',
       'delete-view',
@@ -43,13 +81,18 @@ describe('registry shape', () => {
       'pane-toggle',
       'previous-comment',
       'previous-view',
+      'recover-run',
+      'rename-run',
       'rename-view',
       'resolve-comment',
       'select-next',
       'select-previous',
+      'set-run-step',
       'settings-toggle',
+      'show-archived-runs',
       'sidebar-toggle',
-      'spec-gate-decision'
+      'spec-gate-decision',
+      'unarchive-run'
     ]);
   });
 

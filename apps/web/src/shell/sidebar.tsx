@@ -21,7 +21,7 @@ import { Button } from '../ui/button.js';
 import { Tooltip } from '../ui/tooltip.js';
 import { actionTooltipKey } from './action-registry.js';
 import { isMacPlatform } from './key-utils.js';
-import { CONNECTION_PATH, PROJECTS_PATH, RUNS_PATH, isRunsPath, projectRunsPath } from './navigation.js';
+import { CONNECTION_PATH, PROJECTS_PATH, RUNS_PATH, isArchivedRunsSearch, isRunsPath, projectRunsPath } from './navigation.js';
 
 export type SidebarMode = 'docked' | 'overlay' | 'hidden';
 
@@ -50,7 +50,7 @@ interface PrimaryNavProps {
 
 function PrimaryNav({ projects, views, activeViewId, activateView, onStartRun }: PrimaryNavProps): ReactNode {
   const location = useLocation();
-  const runs = isRunsPath(location.pathname);
+  const inNamedCollection = isRunsPath(location.pathname) && !isArchivedRunsSearch(location.search);
   return (
     <>
       <div className={TITLE_ROW_CLASSES} data-testid="sidebar-title">
@@ -74,15 +74,15 @@ function PrimaryNav({ projects, views, activeViewId, activateView, onStartRun }:
         </div>
         <div role="group" aria-label="Run views" className="flex shrink-0 flex-col gap-0.5">
           {views.map((view) => {
-            const active = runs && view.id === activeViewId;
+            const active = inNamedCollection && view.id === activeViewId;
             return (
               <Link key={view.id}
-                to={runs ? { pathname: location.pathname, search: location.search, hash: location.hash } : RUNS_PATH}
+                to={inNamedCollection ? { pathname: location.pathname, search: location.search, hash: location.hash } : RUNS_PATH}
                 className={`${rowClass({ isActive: active })} pl-7`}
                 aria-current={active ? 'page' : undefined}
                 onClick={(event) => {
                   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-                  if (runs) event.preventDefault();
+                  if (inNamedCollection) event.preventDefault();
                   activateView(view.id);
                 }}>
                 <span className="truncate">{view.name}</span>

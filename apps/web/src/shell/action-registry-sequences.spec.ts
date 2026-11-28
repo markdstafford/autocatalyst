@@ -109,6 +109,9 @@ describe('advanceSequence', () => {
 // conceivable state. Include legacy runs without derived status/waiting fields.
 function* detailSamples(): Iterable<ActionState> {
   yield {};
+  for (const status of ['canceled', 'failed'] as const) {
+    yield { run: { ...makeRun({ status }), archivedAt: '2026-01-02T00:00:00Z' }, archivedOnly: true };
+  }
   const steps = [
     'spec.author', 'spec.awaiting_input', 'spec.human_review', 'implementation.awaiting_input',
     'implementation.human_review', 'docs.human_review', 'pr.human_review'
@@ -127,7 +130,7 @@ function* detailSamples(): Iterable<ActionState> {
         const run = { ...makeRun(), currentStep, status, waitingOn, terminal: status !== undefined && status !== 'in_progress' };
         for (const detailTab of ALL_TAB_IDS) {
           for (const specReady of [true, false]) {
-            for (const comment of comments) yield { run, detailTab, specReady, ...comment };
+            for (const comment of comments) yield { run, detailTab, specReady, hasStepCandidates: true, ...comment };
           }
         }
       }

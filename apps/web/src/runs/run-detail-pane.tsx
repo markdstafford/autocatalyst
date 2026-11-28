@@ -50,6 +50,10 @@ export interface RunDetailPaneProps {
   /** The loaded current operator principal id, or undefined when unknown (non-fatal). */
   readonly currentPrincipalId?: string;
   readonly currentPrincipalIsHuman?: boolean;
+  readonly runActions?: ReactNode;
+  readonly actionOutcome?: ReactNode;
+  readonly titleEditor?: ReactNode;
+  onRename?(opener: HTMLElement): void;
 }
 
 const EMPTY_PANE_BAR = <div data-testid="pane-bar" className="h-pane-bar shrink-0 border-b border-border px-3" />;
@@ -57,7 +61,7 @@ const EMPTY_PANE_BAR = <div data-testid="pane-bar" className="h-pane-bar shrink-
 export function RunDetailPane({
   run,
   detail,
-  currentPrincipalId, currentPrincipalIsHuman
+  currentPrincipalId, currentPrincipalIsHuman, runActions, actionOutcome, titleEditor, onRename
 }: RunDetailPaneProps): ReactNode {
   return (
     <aside
@@ -85,20 +89,23 @@ export function RunDetailPane({
           </div>
         </>
       ) : (
-        <RunDetailBody run={run} detail={detail} currentPrincipalId={currentPrincipalId} currentPrincipalIsHuman={currentPrincipalIsHuman} />
+        <RunDetailBody run={run} detail={detail} currentPrincipalId={currentPrincipalId} currentPrincipalIsHuman={currentPrincipalIsHuman}
+          runActions={runActions} actionOutcome={actionOutcome} titleEditor={titleEditor} onRename={onRename} />
       )}
     </aside>
   );
 }
 
-interface RunDetailBodyProps {
+interface RunDetailBodyProps extends Pick<RunDetailPaneProps, 'runActions' | 'actionOutcome' | 'titleEditor'> {
   readonly run: Run;
   readonly detail: RunDetailState;
   readonly currentPrincipalId: string | undefined;
   readonly currentPrincipalIsHuman: boolean | undefined;
+  readonly onRename: RunDetailPaneProps['onRename'];
 }
 
-function RunDetailBody({ run, detail, currentPrincipalId, currentPrincipalIsHuman }: RunDetailBodyProps): ReactNode {
+function RunDetailBody({ run, detail, currentPrincipalId, currentPrincipalIsHuman, runActions,
+  actionOutcome, titleEditor, onRename }: RunDetailBodyProps): ReactNode {
   const [keptTabId, setKeptTabId] = useState<RunDetailTabId>('summary');
   const [overlayOpen, setOverlayOpen] = useState(false);
 
@@ -181,6 +188,7 @@ function RunDetailBody({ run, detail, currentPrincipalId, currentPrincipalIsHuma
   return (
     <>
       <div data-testid="pane-bar" className="flex h-pane-bar shrink-0 items-center justify-end gap-2 border-b border-border px-3">
+        {runActions}
         {showExpand ? (
           <Tooltip label={expandLabel} keyHint={actionTooltipKey('expand-spec', isMac)}>
             <Button
@@ -208,7 +216,8 @@ function RunDetailBody({ run, detail, currentPrincipalId, currentPrincipalIsHuma
 
       <div data-testid="pane-body" className="flex min-h-0 flex-1 flex-col">
         <div className="shrink-0 px-4 pb-4 pt-4">
-          <RunDetailHeader run={run} />
+          <RunDetailHeader run={run} editor={titleEditor} {...(onRename === undefined ? {} : { onRename })} />
+          {actionOutcome}
           {detail.guidancePause && detail.answerGuidance && currentPrincipalIsHuman !== false ? (
             <GuidanceReply key={detail.guidancePause.stepId} pause={detail.guidancePause} answer={detail.answerGuidance} />
           ) : null}

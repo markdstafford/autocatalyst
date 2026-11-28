@@ -12,6 +12,7 @@
  * overlays that draw their own chrome.
  */
 import { Dialog as BaseDialog } from '@base-ui/react/dialog';
+import { AlertDialog } from '@base-ui/react/alert-dialog';
 import type { ReactNode } from 'react';
 
 export interface DialogProps {
@@ -21,6 +22,7 @@ export interface DialogProps {
   readonly title: string;
   /** Optional one-line description under the title. */
   readonly description?: string;
+  readonly alert?: boolean;
   readonly children: ReactNode;
   /** Extra utility classes merged onto the popup. */
   readonly className?: string;
@@ -49,6 +51,7 @@ export function Dialog({
   onOpenChange,
   title,
   description,
+  alert = false,
   children,
   className,
   fullScreen = false,
@@ -59,24 +62,25 @@ export function Dialog({
 }: DialogProps): ReactNode {
   const popupClasses = fullScreen ? FULLSCREEN_POPUP_CLASSES : POPUP_CLASSES;
   const titleClasses = titleVisuallyHidden ? 'sr-only' : 'text-md font-medium text-text';
+  const Layer = alert ? AlertDialog : BaseDialog;
   return (
-    <BaseDialog.Root open={open} onOpenChange={(next) => onOpenChange(next)}>
-      <BaseDialog.Portal>
-        <BaseDialog.Backdrop className={BACKDROP_CLASSES} data-testid={testId === undefined ? undefined : testId + '-backdrop'} />
-        <BaseDialog.Popup initialFocus={initialFocus} finalFocus={finalFocus} className={`${popupClasses} ${className ?? ''}`.trim()} data-testid={testId}>
-          <BaseDialog.Title className={titleClasses}>{title}</BaseDialog.Title>
+    <Layer.Root open={open} onOpenChange={(next: boolean) => onOpenChange(next)}>
+      <Layer.Portal>
+        <Layer.Backdrop className={BACKDROP_CLASSES} data-testid={testId === undefined ? undefined : testId + '-backdrop'} />
+        <Layer.Popup initialFocus={initialFocus} finalFocus={finalFocus} className={`${popupClasses} ${className ?? ''}`.trim()} data-testid={testId}>
+          <Layer.Title className={titleClasses}>{title}</Layer.Title>
           {description !== undefined ? (
-            <BaseDialog.Description className="mt-1 text-sm text-subtext">
+            <Layer.Description className="mt-1 text-sm text-subtext">
               {description}
-            </BaseDialog.Description>
+            </Layer.Description>
           ) : null}
           {fullScreen ? (
             <div className="flex min-h-0 flex-1 flex-col">{children}</div>
           ) : (
             <div className="mt-3">{children}</div>
           )}
-        </BaseDialog.Popup>
-      </BaseDialog.Portal>
-    </BaseDialog.Root>
+        </Layer.Popup>
+      </Layer.Portal>
+    </Layer.Root>
   );
 }

@@ -56,6 +56,9 @@ export interface UseRunDetailOptions {
   readonly authorized?: boolean;
   /** Push an authoritative `getRun` result back into the single source of truth. */
   replaceRun(run: Run): void;
+  /** Collection identity and synchronous freshness fence for getRun/PR snapshots. */
+  readonly readScope?: object;
+  getRunReadVersion?(): number;
   /** Called on a 401 from the stream: navigate to the connection page. */
   onUnauthorized(): void;
   /** Base reconnect delay seam (tests). */
@@ -67,6 +70,8 @@ export interface UseRunDetailOptions {
 }
 
 export interface RunDetailState {
+  /** Only history owned by the current selection, not the prior render's Activity. */
+  readonly actionSteps?: readonly RunStep[] | undefined;
   readonly specHandoff?: { readonly outcome: 'max_rounds' | 'oscillation'; readonly outstandingIds: readonly string[] };
   readonly guidancePause?:
     | { readonly kind: 'spec'; readonly stepId: string; readonly role: 'implementer' | 'reviewer'; readonly question: string }
@@ -116,7 +121,7 @@ function latestProjection(detailRun: Run | undefined, listRun: Run | undefined):
   if (detailRun === undefined || detailRun.id !== listRun?.id) {
     return undefined;
   }
-  return isStrictlyNewer(listRun, detailRun) ? listRun : detailRun;
+  return isStrictlyNewer(detailRun, listRun) ? detailRun : listRun;
 }
 
 function pullRequestIdentity(fact: PullRequestFact): string | undefined {
@@ -139,6 +144,7 @@ const emptyActivity: ActivityFacts = {
 
 export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
   const { client, run, visible, replaceRun, onUnauthorized, log, principalId, authorized = true } = options;
+  const { readScope, getRunReadVersion } = options;
   const runId = run?.id;
   const baseDelayMs = options.reconnectDelayMs ?? RUN_EVENTS_RECONNECT_DELAY_MS;
   const maxDelayMs = options.reconnectMaxDelayMs ?? RUN_EVENTS_RECONNECT_MAX_DELAY_MS;
@@ -149,10 +155,11 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
   const [projectedRun, setProjectedRun] = useState<Run>();
   const [sessions, setSessions] = useState<SessionsFact>({ status: 'loading' });
   const [activity, setActivity] = useState<ActivityFacts>(emptyActivity);
-  const cacheRef = useRef<{ client: ControlPlaneClient; authorized: boolean; principalId: string | undefined; runs: Map<string, HeldRunDetail> } | undefined>(undefined);
+  const cacheRef = useRef<{ client: ControlPlaneClient; authorized: boolean; readScope: object | undefined; principalId: string | undefined; runs: Map<string, HeldRunDetail> } | undefined>(undefined);
   if (cacheRef.current === undefined || cacheRef.current.client !== client || cacheRef.current.authorized !== authorized ||
+    cacheRef.current.readScope !== readScope ||
     (principalId !== undefined && cacheRef.current.principalId !== undefined && cacheRef.current.principalId !== principalId)) {
-    cacheRef.current = { client, authorized, principalId, runs: new Map() };
+    cacheRef.current = { client, authorized, readScope, principalId, runs: new Map() };
   } else if (principalId !== undefined) {
     cacheRef.current.principalId = principalId;
   }
@@ -289,6 +296,7 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
       publishCheck({ ...lastCheck, pending: true });
       // An intervening identity change clears the check info, even if that identity returns.
       const pendingInfo = checkInfo;
+      const runReadVersion = getRunReadVersion?.();
       const isCurrent = (): boolean => !signal.aborted && !gone && checkInfo === pendingInfo;
       try {
         const result = await client.refreshRunPullRequest(id);
@@ -306,7 +314,7 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
           checkVersion += 1;
           publishFact({ status: 'success', value: result.pullRequest });
         }
-        applyRun(result.run);
+        if (runReadVersion === getRunReadVersion?.()) applyRun(result.run);
         publishCheck(
           result.pullRequest.state === 'open' && fact.status === 'success' && fact.value?.state === 'open'
             ? { checkedAt: new Date().toISOString() }
@@ -345,18 +353,21 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
       const trySelectionCheck = initialRead;
       initialRead = false;
       const readVersion = checkVersion;
+      const runReadVersion = getRunReadVersion?.();
+      const currentRunRead = (): boolean => !signal.aborted && runReadVersion === getRunReadVersion?.();
       const capableNow = isSpecCapableWorkKind(runRef.current?.workKind ?? '');
 
       const reads: Promise<void>[] = [];
 
       const runRead = client.getRun(id).then((fresh) => {
-        if (signal.aborted || fresh.id !== id) {
+        if (!currentRunRead() || fresh.id !== id) {
           return undefined;
         }
         applyRun(fresh);
         publishActivity({ runError: undefined });
         return fresh;
       }).catch((error: unknown) => {
+        if (!currentRunRead()) return undefined;
         if (isStatus(error, 404)) {
           stopGone();
         } else {
@@ -396,11 +407,12 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
       reads.push((async () => {
         try {
           const { steps } = await client.listRunSteps(id);
-          if (signal.aborted) return;
+          if (!currentRunRead()) return;
           held.steps = steps;
           held.buffer.reconcile(steps);
           publishActivity({ steps: { pending: false, value: steps } });
         } catch (error: unknown) {
+          if (!currentRunRead()) return;
           publishActivity({ steps: { pending: false, ...(held.steps ? { value: held.steps } : {}),
             error: errorMessage(error, 'Steps read failed.') } });
         }
@@ -642,7 +654,7 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
       controller.abort();
       selectionRef.current = undefined;
     };
-  }, [client, cache, authorized, runId, baseDelayMs, maxDelayMs]);
+  }, [client, cache, authorized, runId, baseDelayMs, maxDelayMs, getRunReadVersion]);
 
   useLayoutEffect(() => {
     const selection = selectionRef.current;
@@ -783,7 +795,9 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
   }
 
   const selectedOwner = selectionRef.current;
+  const selectedHistory = runId !== undefined && activity.buffer === cache.get(runId)?.buffer ? activity.steps : undefined;
   return {
+    actionSteps: selectedHistory?.pending === false && selectedHistory.error === undefined ? selectedHistory.value : undefined,
     pullRequest,
     pullRequestCheck,
     ...(selectedOwner !== undefined && !runGone && canCheckPullRequest(latestProjection(projectedRun, run), pullRequest)

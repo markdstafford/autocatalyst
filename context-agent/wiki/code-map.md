@@ -7,7 +7,7 @@
 - Runtime Micromanager source, pin, synchronization, fidelity checks and E2E handoff: [micromanager-runtime.md](micromanager-runtime.md).
 - Web client design system (tokens, shell dimensions, alignment rules, component rules): [design-system.md](design-system.md).
 
-Last updated: 2026-11-27 (active dispatch cancellation, #154).
+Last updated: 2026-11-28 (web run actions test timing, #157).
 
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
@@ -107,6 +107,24 @@ Last updated: 2026-11-27 (active dispatch cancellation, #154).
 - Set step validates workflow order and reached history before checking occupancy. A successful override emits `set_step` before reserving automatic work. A move from a pause preserves its question and adds `abandonedBySetStep: true` to the closed row's checkpoint. The replies lock rejects abandoned IDs, and implementation guidance needs the current ID once that run has an abandoned implementation pause.
 - Focused coverage: `run-operator-actions.integration.spec.ts` (production server injection, SQLite, retained SSE, scripted convergence without model calls); `orchestrator.spec.ts` (barriers, stale occurrences, and bounded retry); `run-lifecycle-persistence.spec.ts`, `run-recovery-persistence.spec.ts`, `domain-repositories.spec.ts` (write guards, paging, and projection).
 - Operator behavior is documented in [commands](../../context-human/concepts/commands.md) and [HITL](../../context-human/concepts/hitl.md#recovery-versus-set-step). Unarchive reverses visibility; recovery is failed-only and never substitutes for unarchive. Destructive purge is not shipped.
+
+## Web run actions (#157)
+
+- `apps/web/src/shell/action-registry.ts` declares the six run mutations and Show archived runs.
+  The row and pane menus in `runs/run-action-surfaces.tsx` use the same predicates as the keyboard dispatcher.
+  The surfaces module also renders the alert dialog, set-step dialog, title editor, and outcome line.
+  `ui/dialog.tsx` owns the Base UI alert variant; `runs/run-action-history.ts` computes candidates.
+- `routes/runs-page.tsx` composes `runs/use-run-actions.ts` with the list/detail hooks and provides the
+  outcome fallback when the pane header is absent. `runs/run-fields.ts#runDisplayTitle` is shared by the
+  row and pane; use it for title sort when that lands.
+- `shell/navigation.ts` owns the archive query; `shell/shell-layout.tsx` and `shell/header.tsx` share the
+  archive entry action and render the archive breadcrumb without view controls. `runs/use-run-list.ts`
+  scopes archive reads separately and reconciles membership. See
+  [action lifetime](../decisions/web-run-action-lifetime.md) for the read and selection fences.
+- Verify with `pnpm nx test web` and `pnpm nx e2e web`. `apps/web/e2e/run-actions.spec.ts` drives the
+  built client through the connected fake-mode fixture and all five seeded scenarios.
+  In `routes/runs-page.spec.tsx`, wait for the location directly after automatic selection changes:
+  rows and outcomes can render before the router commits the replacement URL.
 
 ## Named run views (#156)
 
