@@ -886,7 +886,7 @@ describe('RunsPage operator actions', () => {
     await user.click(entry);
     await screen.findByRole('heading', { name: 'Archived runs' });
     await screen.findByTestId('run-row-a');
-    expect(screen.getByTestId('location').textContent).toBe('/runs/a?archived=only');
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/runs/a?archived=only'));
     expect(seam.listQueries[0]?.get('archived')).toBeNull();
     expect(seam.listQueries[1]?.get('archived')).toBe('only');
     expect(seam.listQueries[1]?.get('projectId')).toBeNull();
@@ -898,7 +898,7 @@ describe('RunsPage operator actions', () => {
     key('E', { shiftKey: true });
     await screen.findByText('Archived runs appear here.');
     await screen.findByText('Unarchived', { selector: '[role=status]' });
-    expect(screen.getByTestId('location').textContent).toBe('/runs?archived=only');
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/runs?archived=only'));
     await user.click(within(screen.getByRole('banner')).getByRole('link', { name: 'Runs' }));
     await screen.findByTestId('run-row-a');
     expect(screen.queryByText('Unarchived')).toBeNull();
@@ -936,7 +936,7 @@ describe('RunsPage operator actions', () => {
     expect(screen.queryByRole('button', { name: 'View settings' })).toBeNull();
     await act(async () => formerScope.resolve(jsonResponse({ runs: [b] })));
     expect(screen.queryByTestId('run-row-b')).toBeNull();
-    expect(screen.getByTestId('location').textContent).toBe('/runs/a?archived=only');
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/runs/a?archived=only'));
   });
 
   it('rejects a held equal-timestamp title but reconciles a later authoritative title', async () => {
@@ -973,7 +973,7 @@ describe('RunsPage operator actions', () => {
     key('A', { shiftKey: true });
     await screen.findByTestId('run-row-a');
     await act(async () => mutation.resolve(jsonResponse({ run: { ...failed, status: 'in_progress' }, mode: 'resume' })));
-    expect(screen.getByTestId('location').textContent).toBe('/runs/a?archived=only');
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toBe('/runs/a?archived=only'));
     expect(screen.queryByTestId('run-action-outcome')).toBeNull();
     expect(screen.queryByTestId('run-row-failed')).toBeNull();
   });

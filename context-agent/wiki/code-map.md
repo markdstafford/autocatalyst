@@ -7,7 +7,7 @@
 - Runtime Micromanager source, pin, synchronization, fidelity checks and E2E handoff: [micromanager-runtime.md](micromanager-runtime.md).
 - Web client design system (tokens, shell dimensions, alignment rules, component rules): [design-system.md](design-system.md).
 
-Last updated: 2026-11-27 (web run actions, #157).
+Last updated: 2026-11-28 (web run actions test timing, #157).
 
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
@@ -123,6 +123,8 @@ Last updated: 2026-11-27 (web run actions, #157).
   [action lifetime](../decisions/web-run-action-lifetime.md) for the read and selection fences.
 - Verify with `pnpm nx test web` and `pnpm nx e2e web`. `apps/web/e2e/run-actions.spec.ts` drives the
   built client through the connected fake-mode fixture and all five seeded scenarios.
+  In `routes/runs-page.spec.tsx`, wait for the location directly after automatic selection changes:
+  rows and outcomes can render before the router commits the replacement URL.
 
 ## Named run views (#156)
 
