@@ -280,9 +280,10 @@ class ClaudeLiveQuery {
   readonly #controller = new AbortController();
   readonly #messages;
   root?: string;
+  readonly seenAssistantIds = new Set<string>();
   closed = false;
 
-  constructor(readonly fingerprint: string, query: typeof import('@anthropic-ai/claude-agent-sdk').query,
+  constructor(readonly fingerprint: string, readonly account: string, query: typeof import('@anthropic-ai/claude-agent-sdk').query,
     options: Record<string, unknown>, readonly cleanupSkills?: () => void) {
     const source = this.input as AsyncIterable<import('@anthropic-ai/claude-agent-sdk').SDKUserMessage>;
     this.#messages = query({ prompt: source, options: { ...options, abortController: this.#controller } });
@@ -300,7 +301,7 @@ class ClaudeLiveQuery {
         if (next.done) throw new ProviderConnectionError('process_launch_failed', 'Claude ended before completing the active turn.');
         const message = next.value as unknown as Record<string, unknown>;
         yield message;
-        if (message['type'] === 'result') return;
+        if (message['type'] === 'result' && message['isReplay'] !== true && message['is_replay'] !== true) return;
       }
     } finally {
       clearTimeout(timer);
@@ -342,9 +343,10 @@ async function* realSDKLaunch(
   const retention = opts.conversation?.mode === 'retained' ? opts.conversation : undefined;
   const memory = opts.conversation?.mode === 'in_memory' ? opts.conversation : undefined;
   const previous = memory?.resource instanceof ClaudeLiveQuery ? memory.resource : undefined;
-  if (memory && (!sdk || !await memory.verifyLaunch() || (memory.resource && (!previous || previous.closed)))) {
-    throw new NativeResumeRefused('stale', false);
-  }
+  if (memory && !sdk) throw new NativeResumeRefused('unsupported', false);
+  if (memory && !await memory.verifyLaunch()) throw new NativeResumeRefused('workspace_unverified', false);
+  if (memory?.resource && !previous) throw new NativeResumeRefused('launch_changed', false);
+  if (previous?.closed) throw new NativeResumeRefused('transport_closed', false);
   const requestedProtection = opts.conversation?.protectedHistoryRoots;
   const historyRoots = protectedHistoryRoots(requestedProtection,
     [...(opts.workspaceRoots ?? []), ...(opts.cwd ? [opts.cwd] : [])]);
@@ -425,7 +427,8 @@ async function* realSDKLaunch(
   let root = previous?.root;
   const retainedEvents = new Set<string>();
   const linkedTools = new Set<string>();
-  const accounting = new ClaudeUsage(retention?.resumeId !== undefined);
+  const currentAssistantIds = new Set<string>();
+  const accounting = new ClaudeUsage(retention?.resumeId !== undefined || previous !== undefined);
   if (root) accounting.bindRoot(root);
   const invalidRetainedRoot = () => new ProviderProtocolError('invalid_provider_event', 'Claude root conversation did not match the current query.');
   try {
@@ -434,22 +437,27 @@ async function* realSDKLaunch(
     if (memory && sdk) {
       const account = await claudeSubscriptionIdentity(opts.env ?? {});
       opts.signal?.throwIfAborted();
-      if (!account) throw new NativeResumeRefused('unsupported', false);
+      if (!account) throw new NativeResumeRefused('account_changed', false);
       // The control plane has already bound the resolved catalog skills.
       // Materialized plugin paths are temporary and differ between dispatches.
       const stableEnvironment = Object.fromEntries(Object.entries(opts.env ?? {}).filter(([key]) =>
         key !== 'CLAUDE_AGENT_SDK_VERSION' && key !== 'NoDefaultCurrentDirectoryInExePath'
       ).sort(([a], [b]) => a.localeCompare(b)));
       const fingerprint = createHash('sha256').update(JSON.stringify([
-        { ...sdkOpts, plugins: undefined, env: stableEnvironment }, account
+        { ...sdkOpts, plugins: undefined, env: stableEnvironment }
       ])).digest('hex');
-      if (previous && previous.fingerprint !== fingerprint) throw new NativeResumeRefused('stale', false);
+      if (previous && previous.account !== account) throw new NativeResumeRefused('account_changed', false);
+      if (previous && previous.fingerprint !== fingerprint) throw new NativeResumeRefused('launch_changed', false);
+      if (!await memory.verifyLaunch()) throw new NativeResumeRefused('workspace_unverified', false);
+      opts.signal?.throwIfAborted();
+      if (previous?.closed) throw new NativeResumeRefused('transport_closed', false);
       if (previous) live = previous;
       else {
-        live = new ClaudeLiveQuery(fingerprint, sdk.query, sdkOpts, () => releaseSkills?.());
+        live = new ClaudeLiveQuery(fingerprint, account, sdk.query, sdkOpts, () => releaseSkills?.());
         releaseSkills = opts.ownSkills?.();
       }
     }
+    if (live) memory?.submitting?.();
     const messages = live ? live.turn(opts.prompt, opts.timeoutMs ?? 600_000, opts.signal) : query({
       prompt: opts.prompt, options: queryAbort ? { ...sdkOpts, abortController: queryAbort } : sdkOpts
     });
@@ -469,6 +477,22 @@ async function* realSDKLaunch(
         const child = msg['type'] === 'assistant' && typeof msg['parent_tool_use_id'] === 'string';
         if (child && (!linkedTools.has(msg['parent_tool_use_id'] as string) || msg['session_id'] !== root)) continue;
         if (msg['session_id'] !== root) throw invalidRetainedRoot();
+        if (memory && msg['type'] === 'assistant') {
+          const requestId = msg['request_id'];
+          const messageId = (msg['message'] as Record<string, unknown> | undefined)?.['id'];
+          const ids = [
+            ...(typeof requestId === 'string' && requestId ? ['request:' + requestId] : []),
+            ...(typeof messageId === 'string' && messageId ? ['message:' + messageId] : [])
+          ];
+          // Older assistant records can reappear without a replay flag, including
+          // alternate records for a previously seen request or message.
+          if (previous && (ids.length === 0 || ids.some(id => previous.seenAssistantIds.has(id)))) {
+            // Remember aliases without treating them as work from this prompt.
+            for (const id of ids) previous.seenAssistantIds.add(id);
+            continue;
+          }
+          for (const id of ids) currentAssistantIds.add(id);
+        }
       }
       accounting.observe(msg);
       if (msg['type'] === 'assistant') {
@@ -497,13 +521,18 @@ async function* realSDKLaunch(
         if (subtype === 'success') {
           if (root && msg['is_error'] !== true) {
             retention?.completed(root);
-            if (live) { live.root = root; keep = true; }
+            if (live) {
+              live.root = root;
+              for (const id of currentAssistantIds) live.seenAssistantIds.add(id);
+              // Do not prune old IDs and accidentally bill a replay after the cap.
+              keep = live.seenAssistantIds.size <= 16_384;
+            }
           }
           const input_tokens =
             typeof usage?.['input_tokens'] === 'number' ? (usage['input_tokens'] as number) : undefined;
           const output_tokens =
             typeof usage?.['output_tokens'] === 'number' ? (usage['output_tokens'] as number) : undefined;
-          const hasTokens = input_tokens !== undefined && output_tokens !== undefined;
+          const hasTokens = !accounting.resumed && input_tokens !== undefined && output_tokens !== undefined;
           yield {
             type: 'result',
             ...(msg['structured_output'] !== undefined ? { structuredOutput: msg['structured_output'] } : {}),

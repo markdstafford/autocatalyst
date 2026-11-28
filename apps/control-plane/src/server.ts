@@ -4,7 +4,7 @@ import { createPublicationGit, materializePublicationReviewSnapshot } from './pu
 import {
   admitsReviewedLiveConversation, createFreshConversationResolver, createReviewedAttemptPort, type PrepareFreshConversation
 } from './reviewed-conversation.js';
-import { ReviewedLiveConversations } from './reviewed-live-conversations.js';
+import { reviewedLiveRunKey, ReviewedLiveConversations } from './reviewed-live-conversations.js';
 import { createNativeHistoryLaunch, readNativeHistoryHost } from './native-history-launch.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -1115,7 +1115,20 @@ export async function createControlPlaneServer(
   const baseAdapters = options.providerAdapters ?? emptyProviderAdapterMap;
   const reviewedLiveConversations = new ReviewedLiveConversations();
   const nativeHistory = createNativeHistoryLaunch(readNativeHistoryHost(process.env));
-  const { provisionWorkspace } = nativeHistory.lifecycle;
+  const provisionWorkspace = async (request: ProvisionWorkspaceRequest) => {
+    const key = reviewedLiveRunKey(request.project.tenant, request.runId);
+    if (request.existingWorkspaceBehavior === 'replace') reviewedLiveConversations.retireRun(key, 'workspace_changed');
+    try {
+      const result = await nativeHistory.lifecycle.provisionWorkspace(request);
+      if (result.shape !== 'two_roots' || result.outcome === 'materialized') {
+        reviewedLiveConversations.retireRun(key, 'workspace_changed');
+      }
+      return result;
+    } catch (error) {
+      reviewedLiveConversations.retireRun(key, 'workspace_changed');
+      throw error;
+    }
+  };
   let mergedAdapters: ProviderAdapterMap = baseAdapters;
   // Extension-registry entries mirroring the adapters that real dispatch registers.
   // Startup composition validates persisted provider profiles against the registry
@@ -1894,6 +1907,10 @@ export async function createControlPlaneServer(
           const port = createReviewedAttemptPort({
             repository: agentConversations, roleInput, prepareFreshConversation,
             live: reviewedLiveConversations,
+            recordReuse: ({ id, runId, step, role, round, occurrenceId }, evidence) => {
+              app.log.info({ event: 'reviewed_conversation_reuse', runId, phase: step.split('.')[0], step, role, round,
+                occurrenceId, attemptId: id, ...evidence }, 'Reviewed conversation decision.');
+            },
             admitsLive: (profile, fresh) => isBuiltIn(profile) && admitsReviewedLiveConversation(profile, fresh),
             freshHandoff: renderReviewedHandoff({ evidence, requiredFindingIds, requiredDispositions }),
             ...(workspaceRoot ? { workspacesRoot: workspaceRoot } : {}),
@@ -2076,7 +2093,16 @@ export async function createControlPlaneServer(
     workflowResolver,
     runs: domainRepos.runs,
     conversationIngress,
-    events: eventBus,
+    events: {
+      append(input) {
+        if (input.event.type === 'run_state_transition' && input.event.run.terminal) {
+          reviewedLiveConversations.retireRun(reviewedLiveRunKey(input.scope.tenant, input.scope.runId), 'run_terminal');
+        }
+        return eventBus.append(input);
+      },
+      replayAfter: input => eventBus.replayAfter(input),
+      subscribe: input => eventBus.subscribe(input)
+    },
     dispatchQueue,
     ...(resolvedUnitOfWork !== undefined ? { unitOfWork: resolvedUnitOfWork } : {}),
     feedbackLifecycleDependencies,

@@ -11,6 +11,8 @@ export type NativeConversationTurn = {
       readonly mode: 'in_memory';
       readonly resource?: NativeConversationResource;
       verifyLaunch(): Promise<boolean>;
+      /** Last synchronous custody check, immediately before sending the prompt. */
+      submitting?(): void;
       ready(resource: NativeConversationResource): void;
     }
   | {
@@ -57,9 +59,12 @@ export function protectedHistoryRoots(
   return [...new Set(roots)];
 }
 
-/** Only a pinned native boundary that rejected before seeing the prompt may create this error. */
+export type NativeResumeRefusalReason = 'missing' | 'unsupported' | 'expired' | 'stale' | 'workspace_unverified' |
+  'transport_closed' | 'transport_error' | 'pre_submit_timeout' | 'account_changed' | 'launch_changed';
+
+/** Only a pinned native boundary may assert that the prompt was definitely not submitted. */
 export class NativeResumeRefused extends Error {
-  constructor(readonly decision: 'missing' | 'unsupported' | 'expired' | 'stale', readonly launched: boolean) {
+  constructor(readonly decision: NativeResumeRefusalReason, readonly launched: boolean) {
     super('The native conversation could not be resumed before the prompt was accepted.');
     this.name = 'NativeResumeRefused';
   }

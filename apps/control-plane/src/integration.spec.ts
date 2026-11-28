@@ -1,7 +1,7 @@
 import { reviewedSpecCompletionStub } from './spec-completion.test-helper.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -28,7 +28,8 @@ import {
   runReplyResponseSchema,
   runSchema,
   runSpecResponseSchema,
-  runStepListResponseSchema
+  runStepListResponseSchema,
+  type RunnerEvent
 } from '@autocatalyst/api-contract';
 import {
   addressFeedback,
@@ -56,11 +57,11 @@ import {
 import {
   createOpenAIAgentAdapter
 } from '@autocatalyst/openai-agent-adapter';
-import type { RunnerEvent } from '@autocatalyst/execution';
 import {
   asInternalSqliteDatabase,
   createDrizzleDomainRepositories,
   createSqliteDatabase,
+  DrizzleConfigurationRecordRepository,
   DrizzleConversationIngressRepository,
   migrateSqliteDatabase,
   SqliteSecretStore
@@ -891,6 +892,7 @@ async function createLocalGitRepository(root: string): Promise<string> {
 async function seedFeatureProject(input: {
   readonly databasePath: string;
   readonly repoUrl: string;
+  readonly codeHostSetting?: Parameters<ReturnType<typeof createDrizzleDomainRepositories>['projects']['create']>[0]['codeHostSetting'];
 }): Promise<{ projectId: string }> {
   const seedDb = createSqliteDatabase({ path: input.databasePath });
   await migrateSqliteDatabase(seedDb);
@@ -903,7 +905,7 @@ async function seedFeatureProject(input: {
     hostRepository: { provider: 'github', owner: 'integration', name: 'host-repo' },
     workspaceRootOverride: null,
     issueTrackerSetting: null,
-    codeHostSetting: null,
+    codeHostSetting: input.codeHostSetting ?? null,
     credentialRefs: []
   });
   seedDb.close();
@@ -2948,6 +2950,248 @@ describe('real feature dispatch workspace context', () => {
   });
 });
 
+describe('production reviewed Codex reuse', () => {
+  it.each([
+    ['spec.author', false], ['spec.author', true], ['implementation.build', false], ['implementation.build', true]
+  ] as const)('keeps accepted %s custody and recovers from a refused preflight (kill=%s)', { timeout: 30_000 }, async (step, killIdle) => {
+    await withTempDatabasePath(async databasePath => {
+      const spec = step === 'spec.author';
+      const root = await realpath(await mkdtemp(join(tmpdir(), 'ac-reviewed-spec-')));
+      try {
+        await Promise.all([mkdir(join(root, 'repos')), mkdir(join(root, 'workspaces'))]);
+        const source = await createLocalGitRepository(root);
+        const { projectId } = await seedFeatureProject({ databasePath, repoUrl: `file://${source}`,
+          ...(!spec ? { codeHostSetting: { provider: 'github', credentialRef: { id: 'fixture', purpose: 'code_host' } } } : {})
+        });
+        const { runId } = spec ? await seedSpecAuthorRun({ databasePath, projectId })
+          : await seedRunAtImplementationBuild(databasePath, projectId);
+        await writeFile(join(root, 'package.json'), '{"type":"commonjs"}');
+        const providerTrace = join(root, 'provider-turns.jsonl');
+        const authorPid = join(root, 'author.pid');
+
+        // A disposable App Server wire fixture; the control-plane and Codex
+        // adapter take the same path they take with the signed-in executable.
+        await writeFile(join(root, 'codex'), '#!' + process.execPath + '\n' + String.raw`
+if (process.argv.includes('--version')) { console.log('codex-cli 0.171.0'); process.exit(); }
+const fs = require('node:fs');
+const trace = ${JSON.stringify(providerTrace)}, authorPid = ${JSON.stringify(authorPid)};
+const spec = ${spec};
+const firstAccepted = spec ? 1 : 0;
+let model, calls = 0;
+const send = (record) => process.stdout.write(JSON.stringify(record) + '\n');
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const { id, method, params } = JSON.parse(line);
+  const reply = result => send({ id, result });
+  if (method === 'initialize') reply({});
+  else if (method === 'account/read') reply({ account: { type: 'chatgpt', planType: 'team', email: 'private@example.test' } });
+  else if (method === 'config/read') reply({ config: {} });
+  else if (method === 'thread/start') {
+    const expected = !spec && params.model === 'fixture-author' ? 'workspace-write' : 'read-only';
+    if (!params.ephemeral || params.sandbox !== expected) process.exit(13);
+    model = params.model;
+    reply({ thread: { id: 'private-thread-' + process.pid }, model, modelProvider: 'openai', sandbox: { type: expected === 'read-only' ? 'readOnly' : 'workspaceWrite' } });
+  } else if (method === 'turn/start') {
+    const position = fs.existsSync(trace) ? fs.readFileSync(trace, 'utf8').trim().split('\n').length : 0;
+    const ids = [...new Set(params.input[0].text.match(/fb_[a-z0-9_-]+/g) || [])];
+    const author = model === 'fixture-author';
+    fs.appendFileSync(trace, JSON.stringify({ role: author ? 'implementer' : 'reviewer', pid: process.pid }) + '\n');
+    let result;
+    if (author) {
+      if (position === firstAccepted) fs.writeFileSync(authorPid, String(process.pid));
+      if (!spec) fs.writeFileSync('fixture-code.txt',
+        params.input[0].text.includes('Repair only the observed required CI failure') ? 'repaired\n' : 'initial\n');
+      result = { ...(spec ? { spec: { kind: 'feature_spec', slug: 'wire-reuse', relativePath: 'context-human/specs/feature-wire-reuse.md',
+        frontmatter: {}, body: '# Draft\n\nThe fixture explains the selected scope.' } } : {}),
+        dispositions: (spec && position === 0 ? ['unrequested'] : ids).map(feedbackId => ({
+          feedbackId, disposition: 'fixed', summary: 'Clarified the scope.'
+        })) };
+    } else result = calls === 0
+      ? { status: 'findings', findings: [{ scope: 'document', title: 'Clarify scope', body: 'The fixture must clarify scope.', severity: 'blocker' }] }
+      : { status: 'satisfied' };
+    const complete = () => {
+      const turnId = 'turn-' + (++calls);
+      const threadId = params.threadId;
+      reply({ turn: { id: turnId } });
+      send({ method: 'item/completed', params: { threadId, turnId,
+        item: { id: 'message-' + calls, type: 'agentMessage', text: JSON.stringify(result) } } });
+      send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
+    };
+    if (${killIdle} && position === firstAccepted + 1) {
+      process.kill(Number(fs.readFileSync(authorPid, 'utf8')));
+      setTimeout(complete, 75);
+    } else complete();
+  }
+});
+`, { mode: 0o700 });
+
+        const fixtureDb = createSqliteDatabase({ path: databasePath });
+        const entries = [];
+        try {
+          const configurations = new DrizzleConfigurationRecordRepository(fixtureDb);
+          for (const [role, model] of [['implementer', 'fixture-author'], ['reviewer', 'fixture-reviewer']] as const) {
+            const { id: profileId } = await configurations.create({
+              tenant: hardcodedDevelopmentPrincipal.tenantId,
+              kind: 'provider_profile', providerKind: !spec && role === 'reviewer' ? 'openai' : 'codex',
+              adapterId: !spec && role === 'reviewer' ? 'openai-agents-sdk' : 'codex-app-server-business',
+              settings: { profileName: model, model: { provider: 'openai', model } }
+            });
+            entries.push({ id: role, profileId, route: { mode: 'agent', step, role } });
+            if (!spec && role === 'reviewer') entries.push(
+              { id: 'guide', profileId, route: { mode: 'agent', step: 'implementation.testing_guide', role: 'implementer' } },
+              { id: 'final', profileId, route: { mode: 'agent', step: 'pr.finalize', role: 'reviewer' } }
+            );
+          }
+        } finally { fixtureDb.close(); }
+        let service: ControlPlaneService | undefined;
+        const logs: Array<Record<string, unknown>> = [];
+        vi.stubEnv('PATH', root + ':' + process.env['PATH']);
+        // The Codex build reviewer cannot implement the existing Read/Glob/Grep-only
+        // policy. Keep that policy intact and use a fixture reviewer for build.
+        let reviews = 0;
+        let finalReviews = 0;
+        let branch: string | undefined;
+        let failedHead: string | undefined;
+        const prUrl = 'https://github.com/integration/host-repo/pull/1';
+        const remoteHead = async () => (await execFileAsync('git', ['rev-parse', `refs/heads/${branch}`], { cwd: source })).stdout.trim();
+        const fixtureReviewer = {
+          ...createOpenAIAgentAdapter(), credentialRequirement: 'external' as const,
+          startSession(input: Parameters<ReturnType<typeof createOpenAIAgentAdapter>['startSession']>[0]) {
+            const { workspace } = input.runInput.environment;
+            const file = input.structuredResultCapture?.resultFile;
+            return {
+              events: (async function* (): AsyncIterable<RunnerEvent> {
+                if (!file || workspace.shape !== 'two_roots') throw new Error('Expected a reviewed worktree.');
+                const step = input.runInput.environment.context.run.currentStep;
+                let result: object;
+                if (step === 'implementation.testing_guide') {
+                  result = { instructions: 'Check the fixture.', items: [{ text: 'Read the fixture file.' }] };
+                } else if (step === 'pr.finalize') {
+                  finalReviews++;
+                  expect(input.runInput.nativeConversation?.mode).toBe('fresh_only');
+                  result = { directive: 'advance', titleSubject: 'exercise fixture continuity', validationSummary: [], findings: [] };
+                } else {
+                  const round = ++reviews;
+                  result = round === 1
+                    ? { status: 'findings', findings: [{ title: 'Clarify scope', body: 'The fixture must clarify scope.', severity: 'blocker' }] }
+                    : { status: 'satisfied' };
+                  if (round === 1 && killIdle) {
+                    process.kill(Number(await readFile(authorPid, 'utf8')));
+                    await new Promise(resolve => setTimeout(resolve, 75));
+                  }
+                  await appendFile(providerTrace, JSON.stringify({ role: 'reviewer', pid: 'fixture-reviewer' }) + '\n');
+                }
+                await writeFile(join(workspace.scratchRoot, file), JSON.stringify(result));
+                yield { id: randomUUID(), runId, type: 'runner_terminal_result' as const, step,
+                  importance: 'normal' as const, createdAt: new Date().toISOString(), result: { directive: 'advance' } };
+              })(),
+              metadata: Promise.resolve({ outcome: 'succeeded' as const, launchMechanism: 'fetch_transport' as const,
+                degradedCapabilities: [], tokenUsage: { available: false } })
+            };
+          }
+        };
+        const app = await createControlPlaneServer({
+          databasePath, bearerToken: BEARER_TOKEN, masterSecret: MASTER_SECRET,
+          autoDispatch: { enabled: false }, realRunnerDispatch: { enabled: true },
+          ...(!spec ? {
+            providerAdapters: new Map([[buildProviderAdapterKey('openai', 'openai-agents-sdk'), () => fixtureReviewer]]),
+            resolveCredential: async () => ({ token: 'fixture' }),
+            codeHost: {
+              async executeGh({ args }) {
+                let payload: unknown;
+                if (args[0] === 'pr' && args[1] === 'list') payload = [];
+                else if (args[0] === 'pr' && args[1] === 'create') return { stdout: prUrl, truncated: false };
+                else if (args[0] === 'pr' && args[1] === 'view') {
+                  payload = { number: 1, url: prUrl, state: 'OPEN', headRefName: branch, headRefOid: await remoteHead(),
+                    headRepository: { name: 'host-repo' }, headRepositoryOwner: { login: 'integration' }, baseRefName: 'main' };
+                } else if (args[0] === 'pr' && args[1] === 'edit') return { stdout: '', truncated: false };
+                else if (args[0] === 'api' && args[1] === 'graphql') {
+                  const oid = args.find(arg => arg.startsWith('oid='))?.slice(4);
+                  const nodes = oid === failedHead ? [{ __typename: 'StatusContext', id: 'fixture-check', context: 'Tests',
+                    state: 'FAILURE', createdAt: new Date().toISOString(), isRequired: true }] : [];
+                  payload = { data: { repository: { object: { oid, statusCheckRollup: { contexts: {
+                    totalCount: nodes.length, nodes, pageInfo: { endCursor: null, hasNextPage: false }
+                  } } } } } };
+                } else throw new Error('Unexpected fixture code-host operation.');
+                return { stdout: JSON.stringify(payload), truncated: false };
+              }
+            }
+          } : {}),
+          workspaceRoots: { reposRoot: join(root, 'repos'), workspacesRoot: join(root, 'workspaces') },
+          onControlPlaneReady: ready => { service = ready; },
+          logger: { level: 'info', stream: { write(line: string) { logs.push(JSON.parse(line)); } } }
+        });
+        const headers = { authorization: `Bearer ${BEARER_TOKEN}` };
+        const configure = (payload: object) => app.inject({
+          method: 'POST', url: '/v1/configuration-records', headers, payload
+        });
+        try {
+          const routing = await configure({ kind: 'model_routing_table', settings: { active: true, entries } });
+          expect(routing.statusCode, routing.body).toBe(201);
+          await service!.tick({ principal: hardcodedDevelopmentPrincipal, tenant: hardcodedDevelopmentPrincipal.tenantId, runId });
+          const run = (await app.inject({ method: 'GET', url: `/v1/runs/${runId}`, headers })).json();
+          expect(run.currentStep, JSON.stringify({ run, logs })).toBe(spec ? 'spec.human_review' : 'implementation.human_review');
+          const turns: { role: string; pid: number | string }[] = (await readFile(providerTrace, 'utf8'))
+            .trim().split('\n').map(line => JSON.parse(line));
+          expect(turns.map(turn => turn.role)).toEqual([...(spec ? ['implementer'] : []),
+            'implementer', 'reviewer', 'implementer', 'reviewer']);
+          const [firstAuthor, firstReview, secondAuthor, secondReview] = turns.slice(-4);
+          if (spec) expect(turns[0]!.pid).not.toBe(firstAuthor!.pid); // Rejected dispositions did not promote.
+          expect(firstAuthor!.pid === secondAuthor!.pid).toBe(!killIdle);
+          if (spec) expect(firstReview!.pid).toBe(secondReview!.pid);
+          expect(firstAuthor!.pid).not.toBe(firstReview!.pid);
+
+          const evidence = logs.filter(row => row['event'] === 'reviewed_conversation_reuse');
+          const selected = evidence.find(row => row['decision'] === 'resume_selected' && row['role'] === 'implementer');
+          expect(selected).toMatchObject({ reason: 'compatible', conversationId: expect.any(String) });
+          if (killIdle) {
+            expect(evidence).toContainEqual(expect.objectContaining({
+              decision: 'refused', reason: 'transport_closed', attemptId: selected!['attemptId'], conversationId: selected!['conversationId']
+            }));
+            expect(evidence).toContainEqual(expect.objectContaining({
+              decision: 'fresh', reason: 'fallback', fallbackFrom: selected!['attemptId']
+            }));
+          } else {
+            expect(evidence).toContainEqual(expect.objectContaining({
+              decision: 'resume_submitted', attemptId: selected!['attemptId'], conversationId: selected!['conversationId']
+            }));
+          }
+          expect(JSON.stringify(evidence)).not.toMatch(/private@example|private-thread|feature-wire-reuse|fixture explains/);
+          const sessions = (await app.inject({ method: 'GET', url: `/v1/runs/${runId}/sessions`, headers })).json().sessions;
+          expect(sessions.filter((session: { step: string }) => session.step === step)).toHaveLength(turns.length);
+          if (!spec && !killIdle) {
+            const beforeApproval = createSqliteDatabase({ path: databasePath });
+            try {
+              const metadata = await createDrizzleDomainRepositories(beforeApproval).runWorkspaceMetadata.findByRunId(runId);
+              branch = metadata?.workspaceHandle;
+              expect(branch).toEqual(expect.any(String));
+            } finally { beforeApproval.close(); }
+            const approve = await app.inject({ method: 'POST', url: `/v1/runs/${runId}/replies`, headers,
+              payload: { kind: 'approve', body: 'Approved.' } });
+            expect(approve.statusCode, approve.body).toBe(200);
+            await service!.tick({ principal: hardcodedDevelopmentPrincipal, tenant: hardcodedDevelopmentPrincipal.tenantId, runId });
+            const opened = (await app.inject({ method: 'GET', url: `/v1/runs/${runId}`, headers })).json();
+            expect(opened.currentStep, JSON.stringify({ opened, logs })).toBe('pr.human_review');
+            failedHead = await remoteHead();
+            expect((await app.inject({ method: 'POST', url: '/v1/pull-requests/reconcile', headers })).statusCode).toBe(200);
+            await vi.waitFor(async () => expect(await remoteHead()).not.toBe(failedHead), { timeout: 12_000, interval: 100 });
+            await pollForStep(opts => app.inject({ ...opts, method: 'GET' }), runId, BEARER_TOKEN, 'pr.human_review', 12_000);
+            const adoption = logs.find(row => row['event'] === 'reviewed_conversation_reuse' &&
+              row['role'] === 'implementer' && row['reason'] === 'repair_adopted' && row['decision'] === 'resume_submitted');
+            expect(adoption).toMatchObject({ conversationId: selected!['conversationId'] });
+            expect(finalReviews).toBe(2);
+            expect((await execFileAsync('git', ['show', `refs/heads/${branch}:fixture-code.txt`], { cwd: source })).stdout).toBe('repaired\n');
+            const pr = (await app.inject({ method: 'GET', url: `/v1/runs/${runId}/pull-request`, headers })).json().pullRequest;
+            expect(pr).toMatchObject({ url: prUrl, branch, state: 'open' });
+          }
+        } finally { await app.close(); }
+      } finally {
+        vi.unstubAllEnvs();
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
 describe('workspace metadata persistence for chore runs', () => {
   it('persists workspace metadata with correct branchName (not runId) for chore run through production dispatch', { timeout: 60000 }, async () => {
     await withTempDatabasePath(async (databasePath) => {
@@ -3499,13 +3743,14 @@ async function seedRunAtImplementationHumanReview(databasePath: string): Promise
 }
 
 async function seedRunAtImplementationBuild(
-  databasePath: string
+  databasePath: string,
+  existingProjectId?: string
 ): Promise<{ runId: string }> {
   const seedDb = createSqliteDatabase({ path: databasePath });
   await migrateSqliteDatabase(seedDb);
   const seedRepos = createDrizzleDomainRepositories(seedDb);
 
-  const project = await seedRepos.projects.create({
+  const projectId = existingProjectId ?? (await seedRepos.projects.create({
     owner: hardcodedDevelopmentPrincipal,
     tenant: hardcodedDevelopmentPrincipal.tenantId,
     displayName: 'Convergence Escalation Project',
@@ -3515,9 +3760,9 @@ async function seedRunAtImplementationBuild(
     issueTrackerSetting: null,
     codeHostSetting: null,
     credentialRefs: []
-  });
+  })).id;
   const conversation = await seedRepos.conversations.create({
-    projectId: project.id,
+    projectId,
     owner: hardcodedDevelopmentPrincipal,
     tenant: hardcodedDevelopmentPrincipal.tenantId,
     identity: 'reply-awaiting',

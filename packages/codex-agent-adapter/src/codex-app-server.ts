@@ -6,7 +6,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 import { NativeResumeRefused, ProviderConnectionError, ProviderProtocolError, UnsupportedProviderCapabilityError, protectedHistoryRoots, runtimeSkillsCatalogRoot } from '@autocatalyst/execution';
-import type { NativeConversationProcess } from '@autocatalyst/execution';
+import type { NativeConversationProcess, NativeResumeRefusalReason } from '@autocatalyst/execution';
 
 import { CodexUsage } from './codex-usage.js';
 import { CodexAuthenticationError, type CodexAuthProbe, type CodexAuthMode } from './codex-auth.js';
@@ -69,7 +69,10 @@ export class CodexAppServerClient {
   #error: Error | undefined;
   #stopWatching: (() => void) | undefined;
   #closed = false;
-  get closed(): boolean { return this.#closed; }
+  #unavailable: NativeResumeRefusalReason | undefined;
+  get unavailable(): NativeResumeRefusalReason | undefined {
+    return this.#closed ? this.#unavailable ?? 'transport_closed' : undefined;
+  }
   constructor(binary: string, env: NodeJS.ProcessEnv, cwd: string | undefined, timeoutMs: number, signal?: AbortSignal,
     supervisor?: NativeConversationProcess) {
     const args = [
@@ -83,9 +86,9 @@ export class CodexAppServerClient {
     this.#child = supervisor ? supervisor.spawn({ command: supervisor.executable, args, ...options })
       : spawn(binary, args, { ...options, stdio: ['pipe', 'pipe', 'ignore'] });
     this.#child.stderr?.resume();
-    this.#child.stdin.on('error', () => this.#fail());
-    this.#child.on('error', () => this.#fail());
-    this.#child.on('close', () => this.#fail());
+    this.#child.stdin.on('error', () => this.#fail(failure(), 'transport_error'));
+    this.#child.on('error', () => this.#fail(failure(), 'transport_error'));
+    this.#child.on('close', () => this.#fail(failure(), 'transport_closed'));
     const lines = createInterface({ input: this.#child.stdout });
     lines.on('line', (line) => {
       if (line.length > 4_000_000) { this.#fail(); return; }
@@ -98,7 +101,7 @@ export class CodexAppServerClient {
             const rpcError = record(packet['error']);
             const missing = pending?.resumeId !== undefined && rpcError['code'] === -32600 &&
               rpcError['message'] === `no rollout found for thread id ${pending.resumeId}`;
-            pending?.reject(missing ? new NativeResumeRefused('missing', true) : failure());
+            pending?.reject(missing ? new NativeResumeRefused('missing', false) : failure());
           }
           else pending?.resolve(record(packet['result']));
         } else if (typeof packet['method'] === 'string') {
@@ -117,7 +120,7 @@ export class CodexAppServerClient {
   }
   watch(timeoutMs: number, signal?: AbortSignal): void {
     this.unwatch();
-    const timer = setTimeout(() => this.#fail(new ProviderConnectionError('timeout', 'Codex app-server timed out.')), timeoutMs);
+    const timer = setTimeout(() => this.#fail(new ProviderConnectionError('timeout', 'Codex app-server timed out.'), 'pre_submit_timeout'), timeoutMs);
     const abort = () => this.#fail(new DOMException('Codex session was cancelled.', 'AbortError'));
     this.#stopWatching = () => {
       clearTimeout(timer);
@@ -130,7 +133,8 @@ export class CodexAppServerClient {
     this.#stopWatching?.();
     this.#stopWatching = undefined;
   }
-  #fail(error: Error = failure()): void {
+  #fail(error: Error = failure(), reason: NativeResumeRefusalReason = 'transport_error'): void {
+    if (!this.#error) this.#unavailable = reason;
     this.#error ??= error;
     for (const pending of this.#pending.values()) pending.reject(this.#error);
     this.#pending.clear(); this.#wake?.();
@@ -236,9 +240,9 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
     const retention = options.conversation?.mode === 'retained' ? options.conversation : undefined;
     const memory = options.conversation?.mode === 'in_memory' ? options.conversation : undefined;
     const previous = memory?.resource instanceof CodexLiveThread ? memory.resource : undefined;
-    if (memory && (!await memory.verifyLaunch() || (memory.resource && (!previous || previous.client.closed)))) {
-      throw new NativeResumeRefused('stale', false);
-    }
+    if (memory && !await memory.verifyLaunch()) throw new NativeResumeRefused('workspace_unverified', false);
+    if (memory?.resource && !previous) throw new NativeResumeRefused('launch_changed', false);
+    if (previous?.client.unavailable) throw new NativeResumeRefused(previous.client.unavailable, false);
     const workspaceRoots = options.workspaceRoots ?? [];
     const workspaces = options.cwd ? [...new Set([options.cwd, ...workspaceRoots])] : workspaceRoots;
     const requestedProtection = options.conversation?.protectedHistoryRoots;
@@ -274,7 +278,7 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
         accountFingerprint = codexAccountFingerprint(account);
       });
       if (memory && (!accountFingerprint || options.auth.accountFingerprint !== accountFingerprint)) {
-        throw new NativeResumeRefused('stale', false);
+        throw new NativeResumeRefused('account_changed', false);
       }
       for (const skill of options.skills ?? []) {
         const actual = await realpath(skill.hostPath);
@@ -297,7 +301,7 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
       const fingerprint = memory ? createHash('sha256').update(JSON.stringify([
         request, codexProcessEnvironment(options.env), binary, options.auth.mode, accountFingerprint
       ])).digest('hex') : '';
-      if (previous && previous.fingerprint !== fingerprint) throw new NativeResumeRefused('stale', false);
+      if (previous && previous.fingerprint !== fingerprint) throw new NativeResumeRefused('launch_changed', false);
       const response = previous?.thread ?? (resumeId ? await client.rpc('thread/resume', {
         ...request, threadId: resumeId, excludeTurns: true
       }) : await client.rpc('thread/start', { ...request, allowProviderModelFallback: false, ephemeral: !retention }));
@@ -320,7 +324,11 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
             (resumeId && thread['id'] !== resumeId)) throw failure();
       }
       accounting = new CodexUsage(thread['id'], { provider: 'openai', model: options.model }, Boolean(resumeId || previous), previous?.baseline);
+      if (memory && !await memory.verifyLaunch()) throw new NativeResumeRefused('workspace_unverified', false);
+      options.signal?.throwIfAborted();
+      if (memory && client.unavailable) throw new NativeResumeRefused(client.unavailable, false);
       if (previous) client.drainNotifications();
+      memory?.submitting?.();
       submitted = true;
       const turnResponse = await client.rpc('turn/start', {
         threadId: thread['id'],
@@ -371,8 +379,9 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
         }
       }
     } catch (error) {
-      if (previous && !submitted && client.closed && !(error instanceof Error && error.name === 'AbortError')) {
-        throw new NativeResumeRefused('stale', false);
+      if (memory && !submitted && !(error instanceof NativeResumeRefused) && !options.signal?.aborted) {
+        if (client.unavailable) throw new NativeResumeRefused(client.unavailable, false);
+        if (previous && error instanceof CodexAuthenticationError) throw new NativeResumeRefused('account_changed', false);
       }
       if (error instanceof NativeResumeRefused || error instanceof CodexAuthenticationError || error instanceof ProviderProtocolError ||
           error instanceof ProviderConnectionError || (error instanceof Error && error.name === 'AbortError')) throw error;

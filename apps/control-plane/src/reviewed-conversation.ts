@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
@@ -10,12 +10,12 @@ import {
 import { codexAgentAdapterId, codexBusinessAdapterId, codexProviderKind } from '@autocatalyst/codex-agent-adapter';
 import { implementerDispositionsResultSchema } from '@autocatalyst/api-contract';
 import type { ReviewedAttemptPort, RunRoleWorkInput } from '@autocatalyst/core';
-import { abortable, type MaterializedExecutionEnvironment, type NativeConversationTurn, type ResolvedAgentRunnerProfile } from '@autocatalyst/execution';
+import { abortable, type MaterializedExecutionEnvironment, type NativeConversationTurn, type NativeResumeRefusalReason, type ResolvedAgentRunnerProfile } from '@autocatalyst/execution';
 import type {
   ConversationBinding, ConversationClaim, DrizzleAgentConversationRepository, ReviewedDispatchAttempt
 } from '@autocatalyst/persistence';
 
-import type { ReviewedLiveConversations } from './reviewed-live-conversations.js';
+import { reviewedLiveRunKey, type LiveAdmissionReason, type ReviewedLiveConversations } from './reviewed-live-conversations.js';
 
 const exec = promisify(execFile);
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value, (_key, entry: unknown) => {
@@ -91,9 +91,13 @@ function strictlyInside(root: string, child: string): boolean {
   return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
+type WorkspaceProofInput = Pick<MaterializedExecutionEnvironment, 'workspace'> & {
+  readonly context: { readonly run: { readonly id: string } };
+};
+
 /** This is workspace-instance proof, not proof of native transcript confinement. */
 export async function reviewedWorkspaceProof(
-  environment: MaterializedExecutionEnvironment, workspacesRoot: string, hostRepository?: string
+  environment: WorkspaceProofInput, workspacesRoot: string, hostRepository?: string
 ): Promise<string | null> {
   const ws = environment.workspace;
   if (ws.shape !== 'two_roots') return null;
@@ -149,6 +153,16 @@ export interface VerifiedLaunch {
   reconcile?(): Promise<void>;
 }
 
+type ReuseEvidence = {
+  readonly decision: 'fresh' | 'resume_selected' | 'resume_submitted' | 'fresh_submitted' | 'refused';
+  readonly reason: LiveAdmissionReason | NativeResumeRefusalReason | 'fallback' | 'ineligible' | 'pr_unverified' | 'retained';
+  readonly conversationId: string;
+  readonly fallbackFrom?: string;
+};
+
+const isCanonicalSpecPath = (path: string | undefined): path is string =>
+  Boolean(path && /^context-human\/specs\/(?!\.\.?\/)[^/]+\.md$/u.test(path));
+
 export function createReviewedAttemptPort(input: {
   readonly repository: DrizzleAgentConversationRepository;
   readonly roleInput: RunRoleWorkInput;
@@ -161,6 +175,7 @@ export function createReviewedAttemptPort(input: {
   readonly reconcileWorkspace?: (environment: MaterializedExecutionEnvironment, generation: string) => Promise<void>;
   readonly prepareFreshConversation?: PrepareFreshConversation;
   readonly live?: ReviewedLiveConversations;
+  readonly recordReuse?: (attempt: ReviewedDispatchAttempt, evidence: ReuseEvidence) => void;
   readonly admitsLive?: (profile: ResolvedAgentRunnerProfile, fresh: Awaited<ReturnType<PrepareFreshConversation>>) => boolean;
   readonly benchmarkArm?: 'A' | 'B';
   readonly qualifiedBuild?: (build: RetentionBuild) => boolean;
@@ -172,10 +187,16 @@ export function createReviewedAttemptPort(input: {
       (step === 'spec.author' && !roleInput.specReview)) return undefined;
   const prepareFreshConversation = input.prepareFreshConversation ?? createFreshConversationResolver();
   let prepared: ReviewedDispatchAttempt | undefined;
+  let evidence: ReuseEvidence | undefined;
+  let deferredLaunch: Parameters<NonNullable<ReviewedAttemptPort['launched']>>[1] | undefined;
+  let submitted = false;
+  const record = (attempt: ReviewedDispatchAttempt, value: ReuseEvidence) => {
+    try { input.recordReuse?.(attempt, value); } catch { /* Diagnostics cannot affect execution. */ }
+  };
   let active: { attempt: ReviewedDispatchAttempt; claim: ConversationClaim; handle?: string; storageScope?: string;
     opened?: Awaited<ReturnType<VerifiedLaunch['open']>>; launch: VerifiedLaunch } | undefined;
 
-  let live: { attemptId: string; finish(accepted: boolean): void } | undefined;
+  let live: { attemptId: string; finish(accepted: boolean, path?: string): void; verifyWorkspace(): Promise<boolean> } | undefined;
 
   async function assertOwner() {
     if (occurrence?.stillOwns && !await occurrence.stillOwns()) throw new Error('reviewed_dispatch_not_owned');
@@ -190,7 +211,7 @@ export function createReviewedAttemptPort(input: {
 
   return {
     freshHandoff: input.freshHandoff,
-    async prepare({ attemptId, environment, fallback, profile }) {
+    async prepare({ attemptId, environment, fallback, fallbackFrom, profile }) {
       await assertOwner();
       const fresh = await prepareFreshConversation(environment, profile);
       const nativeProvider = profile?.providerKind === 'codex' || profile?.providerKind === 'anthropic';
@@ -205,12 +226,21 @@ export function createReviewedAttemptPort(input: {
         occurrenceId: occurrence.id, round: roleInput.round
       };
       const liveScope = hash([attempt.tenant, attempt.runId, step, attempt.role]);
+      const liveRun = reviewedLiveRunKey(attempt.tenant, attempt.runId);
+      const specAuthor = step === 'spec.author' && attempt.role === 'implementer';
       let openLive: (() => ReturnType<ReviewedLiveConversations['open']>) | undefined;
+      let verifyWorkspace: (() => Promise<boolean>) | undefined;
+      let reason: ReuseEvidence['reason'] = fallback ? 'fallback' : 'ineligible';
+      let conversationId: string = randomUUID();
       const ws = environment.workspace;
       let binding: ConversationBinding | undefined;
       let launch: VerifiedLaunch | undefined;
       let workspaceProof: string | null = null;
       let workspaceGeneration: string | null = null;
+      const choose = (decision: ReuseEvidence['decision']) => {
+        evidence = { decision, reason, conversationId, ...(fallbackFrom ? { fallbackFrom } : {}) };
+        record(attempt, evidence);
+      };
       if (ws.shape === 'two_roots' && input.workspacesRoot) {
         const proof = await reviewedWorkspaceProof(environment, input.workspacesRoot, input.hostRepository);
         workspaceProof = proof;
@@ -223,29 +253,53 @@ export function createReviewedAttemptPort(input: {
         } catch { /* Workspace ownership is independent of continuity storage. */ }
         workspaceGeneration = generation;
 
+        input.live?.retireRun(liveRun, 'workspace_changed', generation ?? undefined);
+        if ((!proof || !generation) && !fallback) reason = 'workspace_unverified';
+
         const pr = roleInput.ciRepair?.prBinding;
         const specPath = roleInput.specReview?.canonicalPath;
         const deliverable = step === 'spec.author'
-          ? specPath && /^context-human\/specs\/(?!\.\.?\/)[^/]+\.md$/u.test(specPath) ? [specPath] : []
+          ? isCanonicalSpecPath(specPath) ? [specPath] : []
           : input.repositoryIdentity ? [input.repositoryIdentity, ws.branchName] : [];
-        const scopeDigest = reviewedScopeDigest({
-          workflow: occurrence.workflow, workItemId: roleInput.run.topicId, step, role: roleInput.role, deliverable
-        });
-        const repairBound = !roleInput.ciRepair || (pr && input.repositoryIdentity &&
+        const scopeInput = { workflow: occurrence.workflow, workItemId: roleInput.run.topicId, step: attempt.step, role: roleInput.role };
+        const scopeDigest = reviewedScopeDigest({ ...scopeInput, deliverable });
+        // For live spec custody the path is a separate, host-bound field. An unbound author
+        // can open a provisional lease, but only core can settle it with an accepted path.
+        const liveDigest = step === 'spec.author'
+          ? (isCanonicalSpecPath(specPath) || (specPath === undefined && specAuthor)) &&
+            reviewedScopeDigest({ ...scopeInput, deliverable: ['spec_authoring'] })
+          : scopeDigest;
+        const repairBound = !roleInput.ciRepair || (occurrence.stillOwns && pr && input.repositoryIdentity &&
           pr.repository === input.repositoryIdentity && pr.branch === ws.branchName && pr.id && Number.isInteger(pr.number) && pr.number > 0);
-        if (profile && generation && scopeDigest && repairBound) {
-          if (!fallback && proof && input.live && input.admitsLive?.(profile, fresh)) {
-            const compatibility = hash({
-              generation, scopeDigest, pr, profile, proof,
-              toolPolicy: environment.toolPolicy, capabilities: environment.capabilities, skills: environment.skills,
-              protectedHistoryRoots: fresh.protectedHistoryRoots
-            });
-            openLive = () => input.live?.open(liveScope, compatibility, async () => {
+        if (!fallback && !repairBound && generation) reason = 'pr_unverified';
+        const prIdentity = pr && repairBound ? JSON.stringify([pr.repository, pr.id, pr.number, pr.branch]) : undefined;
+        if (profile && generation && proof && liveDigest && repairBound && (!specAuthor || roleInput.deferSpecAuthorConversation) &&
+            !fallback && input.live && input.admitsLive?.(profile, fresh)) {
+          const compatibility = hash({
+            generation, scopeDigest: liveDigest, profile, proof,
+            toolPolicy: environment.toolPolicy, capabilities: environment.capabilities, skills: environment.skills,
+            protectedHistoryRoots: fresh.protectedHistoryRoots
+          });
+          const { workspacesRoot, hostRepository, repository } = input;
+          const proofTarget = { context: { run: { id: attempt.runId } }, workspace: ws };
+          const proveCurrent = async () => Boolean(workspacesRoot &&
+            await reviewedWorkspaceProof(proofTarget, workspacesRoot, hostRepository) === proof &&
+            repository.readyWorkspaceScopes({
+              tenant: attempt.tenant, runId: attempt.runId, root: ws.repoRoot, branch: ws.branchName
+            })?.generation === generation);
+          verifyWorkspace = proveCurrent;
+          openLive = () => input.live!.open({
+            key: liveScope, run: liveRun, generation, compatibility, ...(specPath ? { specPath } : {}),
+            ...(prIdentity ? { prIdentity } : {}), verifyWorkspace: proveCurrent,
+            async verifyLaunch() {
               await assertOwner();
-              return Boolean(input.workspacesRoot &&
-                await reviewedWorkspaceProof(environment, input.workspacesRoot, input.hostRepository) === proof);
-            });
-          }
+              const valid = await proveCurrent();
+              await assertOwner();
+              return valid;
+            }
+          });
+        }
+        if (profile && generation && scopeDigest && repairBound) {
           const candidate = await input.admit?.(environment, generation, profile).catch(() => undefined);
           const provider = profile.providerKind === 'anthropic' ? 'claude' : profile.providerKind;
           if (candidate && candidate.build.provider === provider && candidate.authenticatedBinding.trim() &&
@@ -259,19 +313,25 @@ export function createReviewedAttemptPort(input: {
                 inference: profile.inferenceSettings, endpoint: profile.endpoint, toolPolicy: environment.toolPolicy,
                 capabilities: environment.capabilities, skills: environment.skills
               }),
-              prIdentity: pr ? JSON.stringify([pr.repository, pr.id, pr.number, pr.branch]) : null };
+              prIdentity: prIdentity ?? null };
           }
         }
+      } else if (input.live) {
+        input.live.retireRun(liveRun, 'workspace_changed');
+        if (!fallback) reason = 'workspace_unverified';
       }
       await assertOwner();
       let claim: ConversationClaim | undefined;
       try {
         claim = input.repository.begin(attempt, binding, fallback ? 'fallback' : undefined);
         prepared = attempt;
+        submitted = false;
+        deferredLaunch = undefined;
       }
       catch (error) {
         if (error instanceof Error && error.message === 'reviewed_dispatch_not_owned') throw error;
         input.live?.discard(liveScope);
+        choose('fresh');
         return nativeProvider ? fresh : undefined;
       }
       if (!openLive || (claim && launch)) input.live?.discard(liveScope);
@@ -280,13 +340,32 @@ export function createReviewedAttemptPort(input: {
           await assertOwner();
           await input.reconcileWorkspace?.(environment, workspaceGeneration).catch(() => undefined);
         }
+        await assertOwner();
         const opened = openLive?.();
-        if (opened) {
-          live = { attemptId, finish: opened.finish };
-          return { ...opened.turn, ...(fresh.protectedHistoryRoots ? { protectedHistoryRoots: fresh.protectedHistoryRoots } : {}) };
+        reason = opened?.reason ?? reason;
+        if (opened?.turn && verifyWorkspace) {
+          conversationId = opened.id;
+          live = { attemptId, finish: opened.finish, verifyWorkspace };
+          const resumed = Boolean(opened.turn.resource);
+          choose(resumed ? 'resume_selected' : 'fresh');
+          return {
+            ...opened.turn, ...(fresh.protectedHistoryRoots ? { protectedHistoryRoots: fresh.protectedHistoryRoots } : {}),
+            submitting() {
+              opened.turn.submitting?.();
+              if (submitted || prepared?.id !== attemptId) return;
+              submitted = true;
+              if (deferredLaunch) {
+                try { input.repository.markLaunched(attempt, deferredLaunch); } catch { /* best effort */ }
+              }
+              choose(resumed ? 'resume_submitted' : 'fresh_submitted');
+            }
+          };
         }
+        choose('fresh');
         return nativeProvider ? fresh : undefined;
       }
+      reason = 'retained';
+      choose(claim.resume ? 'resume_selected' : 'fresh');
       active = { attempt, claim, launch };
       const opened = await launch.open(claim.resume).catch(() => undefined);
       if (opened) active.opened = opened;
@@ -320,22 +399,38 @@ export function createReviewedAttemptPort(input: {
     },
     launched(attemptId, launch) {
       if (prepared?.id === attemptId) {
+        if (live?.attemptId === attemptId && !submitted) {
+          deferredLaunch = launch;
+          return;
+        }
         try { input.repository.markLaunched(prepared, launch); }
         catch { /* Recording continuity metadata must not stop an otherwise valid invocation. */ }
       }
     },
-    async finish({ attemptId, accepted, checkpoint, beforeLaunch, signal }) {
+    async finish({ attemptId, accepted, checkpoint, beforeLaunch, refusal, signal }) {
       if (prepared?.id === attemptId) {
-        if (beforeLaunch) input.repository.markFreshAfterPreflight(prepared);
+        if (refusal && evidence) record(prepared, { ...evidence, decision: 'refused', reason: refusal });
+        if (beforeLaunch) {
+          try { input.repository.markFreshAfterPreflight(prepared); } catch { /* best effort */ }
+        }
         prepared = undefined;
+        evidence = undefined;
       }
       if (live?.attemptId === attemptId) {
         const pending = live;
         live = undefined;
-        try {
-          pending.finish(accepted && (!occurrence.stillOwns || await occurrence.stillOwns()) && hasRequiredDispositions(checkpoint) && !signal?.aborted);
-        }
-        finally { pending.finish(false); }
+        const specAuthor = step === 'spec.author' && roleInput.role === 'implementer';
+        const settle = async (path?: string) => {
+          try {
+            const compatiblePath = !specAuthor || (isCanonicalSpecPath(path) &&
+              (roleInput.specReview?.canonicalPath === undefined || roleInput.specReview.canonicalPath === path));
+            pending.finish(accepted && compatiblePath && !signal?.aborted && hasRequiredDispositions(checkpoint) &&
+              await pending.verifyWorkspace() && (!occurrence.stillOwns || await occurrence.stillOwns()) && !signal?.aborted, path);
+          } catch { /* Disposal is safer than retaining unverified custody. */ }
+          finally { pending.finish(false); }
+        };
+        if (specAuthor && accepted && roleInput.deferSpecAuthorConversation) roleInput.deferSpecAuthorConversation(settle);
+        else await settle();
       }
       if (active?.attempt.id !== attemptId) return;
       const { attempt, claim, handle, storageScope, opened, launch } = active;

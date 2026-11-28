@@ -453,23 +453,25 @@ describe('createClaudeAgentAdapter — connection mechanism', () => {
 
 describe('createClaudeAgentAdapter — launch input mapping', () => {
   it('forwards prompt, cwd, allowedTools, and connection env', async () => {
-    const scratchRoot = '/tmp/claude-adapter-test-scratch';
-    const { input } = makeSessionInput({
-      prompt: 'Implement parser',
-      allowedTools: ['bash', 'filesystem', 'lsp'],
-      scratchRoot
-    });
-    const { launch, calls } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
-    const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
-    const session = await adapter.startSession(input);
-    await collect(session.events);
-    expect(calls).toHaveLength(1);
-    const opts = calls[0]!;
-    expect(opts.prompt).toBe('Implement parser');
-    expect(opts.cwd).toBe(scratchRoot);
-    expect(opts.allowedTools).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']);
-    expect(opts.env?.ANTHROPIC_AUTH_TOKEN).toBe(SECRET_TOKEN);
-    expect(opts.env?.ANTHROPIC_BASE_URL).toBe('https://api.anthropic.com');
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'claude-adapter-test-scratch-'));
+    try {
+      const { input } = makeSessionInput({
+        prompt: 'Implement parser',
+        allowedTools: ['bash', 'filesystem', 'lsp'],
+        scratchRoot
+      });
+      const { launch, calls } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
+      const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
+      const session = await adapter.startSession(input);
+      await collect(session.events);
+      expect(calls).toHaveLength(1);
+      const opts = calls[0]!;
+      expect(opts.prompt).toBe('Implement parser');
+      expect(opts.cwd).toBe(scratchRoot);
+      expect(opts.allowedTools).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']);
+      expect(opts.env?.ANTHROPIC_AUTH_TOKEN).toBe(SECRET_TOKEN);
+      expect(opts.env?.ANTHROPIC_BASE_URL).toBe('https://api.anthropic.com');
+    } finally { await rm(scratchRoot, { recursive: true, force: true }); }
   });
 
   it('deduplicates Claude tool names and preserves already concrete Claude tools', async () => {
@@ -1599,6 +1601,53 @@ describe('Claude provider cancellation', () => {
       release.open();
       await settled;
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('does not bill previous Claude requests or terminal aggregates when a live query is reused', async () => {
+    const assistant = (requestId: string | undefined, messageId: string, read: number, write: number) => ({
+      type: 'assistant', session_id: 'root', parent_tool_use_id: null, request_id: requestId,
+      message: { id: messageId, model: 'claude-sonnet-4-6', content: [{ type: 'text', text: messageId }],
+        usage: { input_tokens: 2, output_tokens: 3, cache_read_input_tokens: read, cache_creation_input_tokens: write } }
+    });
+    const result = (read: number, write: number) => ({
+      type: 'result', subtype: 'success', session_id: 'root', result: 'OK',
+      usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: read, cache_creation_input_tokens: write },
+      modelUsage: { 'claude-sonnet-4-6': { inputTokens: 10, outputTokens: 20, cacheReadInputTokens: read, cacheCreationInputTokens: write } }
+    });
+    const packets = [
+      { type: 'system', subtype: 'init', session_id: 'root' },
+      assistant('req-1', 'msg-1', 100, 50), result(100, 50),
+      assistant(undefined, 'msg-1', 100, 50), assistant('req-1', 'alternate-old', 100, 50),
+      { ...assistant('replayed', 'flagged', 100, 50), isReplay: true }, assistant('req-2', 'msg-2', 7, 9), result(107, 59),
+      assistant('req-2', 'msg-2', 7, 9), result(200, 99)
+    ];
+    const query = vi.fn(() => ({
+      close: vi.fn(),
+      async next() { return { value: packets.shift(), done: false }; }
+    }));
+    vi.doMock('@anthropic-ai/claude-agent-sdk', () => ({ query }));
+    const { input } = makeSessionInput();
+    const adapter = createClaudeAgentAdapter();
+    let resource: { close(): void } | undefined;
+    try {
+      const usage = [];
+      for (let turn = 0; turn < 3; turn++) {
+        const session = await adapter.startSession({ ...input, runInput: { ...input.runInput,
+          nativeConversation: { mode: 'in_memory', ...(resource ? { resource } : {}), verifyLaunch: async () => true,
+            ready: live => { resource = live; } } } });
+        const events = await collect(session.events);
+        if (turn === 1) expect(events.filter(event => event.type === 'runner_assistant_turn')).toHaveLength(1);
+        usage.push((await session.metadata).tokenUsage);
+        await session.close?.();
+      }
+      expect(query).toHaveBeenCalledOnce();
+      expect(usage[0]).toMatchObject({ usage: { coverage: 'complete', totals: { cacheRead: 100, cacheWrite: 50 } } });
+      expect(usage[1]).toMatchObject({ usage: { coverage: 'partial', totals: { cacheRead: 7, cacheWrite: 9 } } });
+      expect(usage[2]).toMatchObject({ available: false });
+    } finally {
+      resource?.close();
+      vi.doUnmock('@anthropic-ai/claude-agent-sdk');
     }
   });
 

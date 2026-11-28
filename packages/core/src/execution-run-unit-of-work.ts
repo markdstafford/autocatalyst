@@ -6,6 +6,7 @@ import {
   RunnerProtocolError,
   NativeResumeRefused,
   type NativeConversationTurn,
+  type NativeResumeRefusalReason,
   type MaterializedExecutionEnvironment,
   type ResolvedAgentRunnerProfile,
   PreTerminalRunnerFailure,
@@ -51,9 +52,9 @@ export interface SessionRetryPolicyOptions {
 }
 
 export interface ReviewedAttemptPort {
-  prepare(input: { attemptId: string; fallback: boolean; environment: MaterializedExecutionEnvironment; profile?: ResolvedAgentRunnerProfile }): Promise<NativeConversationTurn | undefined>;
+  prepare(input: { attemptId: string; fallback: boolean; fallbackFrom?: string; environment: MaterializedExecutionEnvironment; profile?: ResolvedAgentRunnerProfile }): Promise<NativeConversationTurn | undefined>;
   launched?(attemptId: string, launch: Pick<RunnerSessionMetadata, 'model' | 'inferenceSettings' | 'startedAt'>): void;
-  finish(input: { attemptId: string; accepted: boolean; checkpoint?: JsonValue; beforeLaunch?: boolean; signal?: AbortSignal }): Promise<void>;
+  finish(input: { attemptId: string; accepted: boolean; checkpoint?: JsonValue; beforeLaunch?: boolean; refusal?: NativeResumeRefusalReason; signal?: AbortSignal }): Promise<void>;
   freshHandoff?: string;
 }
 
@@ -336,13 +337,14 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       let consumeResult: Awaited<ReturnType<typeof consumeRunnerEvents>>;
       let retriesUsed = 0;
       let fallback = false;
+      let fallbackFrom: string | undefined;
       let attemptId: string | undefined;
       const freshOnly = guideAuthor || input.run.currentStep === 'pr.finalize';
       let nativeMode: NativeConversationTurn['mode'] | undefined;
-      const finish = async (accepted: boolean, checkpoint?: JsonValue, beforeLaunch?: boolean) => {
+      const finish = async (accepted: boolean, checkpoint?: JsonValue, beforeLaunch?: boolean, refusal?: NativeResumeRefusalReason) => {
         if (attemptId && reviewed) await reviewed.finish({ attemptId, accepted: accepted && !signal?.aborted,
           ...(signal ? { signal } : {}),
-          ...(checkpoint !== undefined ? { checkpoint } : {}), ...(beforeLaunch ? { beforeLaunch } : {}) }).catch(() => undefined);
+          ...(checkpoint !== undefined ? { checkpoint } : {}), ...(beforeLaunch ? { beforeLaunch } : {}), ...(refusal ? { refusal } : {}) }).catch(() => undefined);
       };
       // Bounded session-retry loop. Breaks out on a terminal result (advance/needs_input/fail) and
       // returns a fail directive when a transient session failure cannot be recovered.
@@ -358,7 +360,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
             ...(reviewed.freshHandoff ? { freshHandoff: reviewed.freshHandoff } : {}),
             onAttemptLaunch: launch => reviewed.launched?.(id, launch),
             prepareConversation: async (environment: MaterializedExecutionEnvironment, profile?: ResolvedAgentRunnerProfile) => {
-              const native = await reviewed.prepare({ attemptId: id, fallback, environment, ...(profile ? { profile } : {}) });
+              const native = await reviewed.prepare({ attemptId: id, fallback, ...(fallbackFrom ? { fallbackFrom } : {}), environment, ...(profile ? { profile } : {}) });
               nativeMode = native?.mode;
               return native;
             }
@@ -414,11 +416,12 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
           if (preTerminalMeta !== undefined && refusal?.launched !== false) {
             await recordPreTerminalFailedSession(preTerminalMeta, attemptId);
           }
-          await finish(false, undefined, refusal?.launched === false);
+          await finish(false, undefined, refusal?.launched === false, refusal?.decision);
           if (signal?.aborted) return cancelled;
-          if (refusal && (nativeMode === 'retained' || nativeMode === 'in_memory') && !fallback &&
+          if (refusal?.launched === false && (nativeMode === 'retained' || nativeMode === 'in_memory') && !fallback &&
               !(await options.isRunCanceled?.(input.runId))) {
             fallback = true;
+            fallbackFrom = attemptId;
             retriesUsed += 1;
             continue;
           }

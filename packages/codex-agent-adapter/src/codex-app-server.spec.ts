@@ -1,4 +1,5 @@
-import type { AgentTokenUsage } from '@autocatalyst/execution';
+import { createHash } from 'node:crypto';
+import type { AgentTokenUsage, NativeConversationResource } from '@autocatalyst/execution';
 import { mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -14,7 +15,7 @@ const fixture = `
 const fs = require('node:fs');
 if (process.argv.includes('--version')) { console.log('codex-cli ' + (process.env.AC_MODE === 'version' ? '0.0.0' : '0.171.0')); process.exit(); }
 if (process.argv.includes('--sandbox') || process.env.OPENAI_API_KEY) process.exit(7);
-let initialized = false, ready = false, sandbox, selected;
+let initialized = false, ready = false, sandbox, selected, accountReads = 0;
 function send(value) { process.stdout.write(JSON.stringify(value)+'\\n'); }
 require('node:readline').createInterface({input:process.stdin}).on('line', line => {
  const p=JSON.parse(line), v=p.params;
@@ -22,7 +23,16 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
  if (p.method === 'initialize') { initialized=true; respond({userAgent:'fixture'}); }
  else if (p.method === 'initialized') ready=true;
  else if (!initialized || !ready) process.exit(8);
- else if (p.method === 'account/read') respond({account:process.env.AC_MODE==='noauth'?null:{type:'chatgpt',planType:process.env.AC_PLAN || (process.env.AC_MODE==='plan'?'free':'enterprise_cbp_usage_based')}});
+ else if (p.method === 'account/read') {
+  accountReads++;
+  if (accountReads > 1 && process.env.AC_MODE==='pre-submit-timeout') return;
+  if (accountReads > 1 && process.env.AC_MODE==='pre-submit-close') process.exit(0);
+  if (accountReads > 1 && process.env.AC_MODE==='pre-submit-error') { process.stdout.write('invalid JSON\\n'); return; }
+  respond({account:process.env.AC_MODE==='noauth'?null:{type:'chatgpt',
+    email:process.env.AC_PLAN ? undefined :
+      accountReads > 1 && process.env.AC_MODE==='account-change' ? 'changed@example.test' : 'fixture@example.test',
+    planType:process.env.AC_PLAN || (process.env.AC_MODE==='plan'?'free':'enterprise_cbp_usage_based')}});
+ }
  else if (p.method === 'config/read') respond({config:{mcp_servers:{personal:{command:'must-not-run'}}}});
  else if (p.method === 'thread/start') {
   if (fs.realpathSync(v.cwd) !== fs.realpathSync(process.cwd()) || v.approvalPolicy !== 'never' || v.allowProviderModelFallback !== false) process.exit(9);
@@ -50,7 +60,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
  } else if (p.method === 'turn/start') {
   if (selected && (v.permissions !== selected || v.sandboxPolicy)) process.exit(16);
   fs.writeFileSync('turn-started','yes');
-  if (process.env.AC_MODE==='hang') return;
+  if (process.env.AC_MODE==='hang' || (accountReads > 1 && process.env.AC_MODE==='post-submit-timeout')) return;
   const counters={inputTokens:100,cachedInputTokens:60,outputTokens:10,reasoningOutputTokens:4};
   if (process.env.AC_MODE==='reviewed-spec' &&
       (sandbox !== 'read-only' || v.sandboxPolicy.type !== 'readOnly' || v.sandboxPolicy.networkAccess !== false)) process.exit(11);
@@ -119,9 +129,41 @@ describe('Codex app-server wire boundary', () => {
         })) { /* drain */ }
       };
       const error = await drain().catch((error: unknown) => error);
-      if (mode === 'missing') expect(error).toMatchObject({ name: 'NativeResumeRefused', decision: 'missing', launched: true });
+      if (mode === 'missing') expect(error).toMatchObject({ name: 'NativeResumeRefused', decision: 'missing', launched: false });
       else expect(error).not.toMatchObject({ name: 'NativeResumeRefused' });
       await expect(readFile(path.join(cwd, 'turn-started'))).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+  });
+
+  it.each([
+    ['workspace', 'workspace_unverified'], ['closed', 'transport_closed'], ['pre-submit-close', 'transport_closed'],
+    ['pre-submit-error', 'transport_error'], ['pre-submit-timeout', 'pre_submit_timeout'], ['account-change', 'account_changed'],
+    ['instructions-change', 'launch_changed'], ['post-submit-timeout', undefined]
+  ] as const)('diagnoses %s without writing a second prompt before a preflight refusal', async (mode, decision) => {
+    await withCli(async (binary, cwd) => {
+      const launch = codexSessionLaunch(binary);
+      let resource: NativeConversationResource | undefined;
+      let submissions = 0;
+      const conversation = {
+        mode: 'in_memory' as const, ready: (next: NativeConversationResource) => { resource = next; },
+        submitting() { submissions++; }, verifyLaunch: async () => true
+      };
+      const options = { ...launchOptions(cwd, mode), auth: { mode: 'enterprise_sign_in' as const,
+        accountFingerprint: createHash('sha256').update(JSON.stringify(['fixture@example.test', 'enterprise_cbp_usage_based'])).digest('hex') } };
+      try {
+        for await (const event of launch({ ...options, conversation })) void event;
+        expect(resource).toBeDefined();
+        if (mode === 'closed') resource?.close();
+        const attempt = async () => {
+          for await (const event of launch({ ...options, timeoutMs: 250,
+            ...(mode === 'instructions-change' ? { instructions: 'Changed' } : {}),
+            conversation: { ...conversation, resource: resource!, verifyLaunch: async () => mode !== 'workspace' }
+          })) void event;
+        };
+        if (decision) await expect(attempt()).rejects.toMatchObject({ name: 'NativeResumeRefused', decision, launched: false });
+        else await expect(attempt()).rejects.toMatchObject({ name: 'ProviderConnectionError', code: 'timeout' });
+        expect(submissions).toBe(decision ? 1 : 2);
+      } finally { resource?.close(); }
     });
   });
 

@@ -13,6 +13,7 @@ import { resolveReviewedRoutes, type ConvergenceEngineInput } from './convergenc
 import { getImplementationAltitudeLadder, getStepConvergencePolicy } from './convergence-policy.js';
 import type { LayeredConvergenceEngineOptions } from './layered-convergence-engine.js';
 import type { CompleteSpecAuthoringOutput } from './spec-authoring-service.js';
+import type { RunRoleWorkInput } from './reviewed-role-dispatcher.js';
 import type { WorkspaceContext } from './orchestrator.js';
 import { parseSpecFrontmatter, renderReviewedSpecCandidate } from './spec-frontmatter.js';
 import { locateSpecQuote, validateSpecAnchor, type SpecQuoteLookup } from './spec-anchor-validator.js';
@@ -364,11 +365,12 @@ async function runSpecReview(
       const previousDraft = previousMarkdown ?? canonical?.markdown;
       const canonicalPath = canonical?.path ?? current.last?.path ?? pending?.path;
 
-      const runRole = (role: Role, attempt: number, task: Omit<SpecReviewSessionInput, 'resultFile' | 'focus'>) => {
+      const runRole = (role: Role, attempt: number, task: Omit<SpecReviewSessionInput, 'resultFile' | 'focus'>,
+        deferSpecAuthorConversation?: RunRoleWorkInput['deferSpecAuthorConversation']) => {
         input.signal?.throwIfAborted();
         progress.role = role;
         return options.dispatcher.runRole({
-          ...base, role, ...(input.signal ? { signal: input.signal } : {}), reviewedOccurrence: { id: input.runStep.id, workflow: input.workflow,
+          ...base, role, ...(deferSpecAuthorConversation ? { deferSpecAuthorConversation } : {}), ...(input.signal ? { signal: input.signal } : {}), reviewedOccurrence: { id: input.runStep.id, workflow: input.workflow,
             ...(input.stillOwns ? { stillOwns: input.stillOwns } : {}) }, route: role === 'reviewer' ? routes.reviewerRoute : routes.implementerRoute,
           toolPolicyMode: 'read_only',
           specReview: { ...task, focus: focusByAltitude[altitude],
@@ -397,38 +399,45 @@ async function runSpecReview(
             ...(severity ? { severity } : {}) };
         });
         for (let attempt = 0; attempt < 2; attempt++) {
-          const output = await runRole('implementer', attempt, {
-            ...(previousDraft !== undefined ? { revision: digest(previousDraft) } : {}),
-            feedback, priorDispositions: Object.values(current.decisions),
-            ...(authorAnswer ? { answer: authorAnswer } : {}),
-            ...(canonicalPath ? { canonicalPath } : {}), ...(previousDraft ? { previousMarkdown: previousDraft } : {}),
-            ...(attempt ? { correction: 'Return a valid spec envelope and disposition every listed ID exactly once.' } : {})
-          });
-          if (output.workResult.directive === 'cancelled' || input.signal?.aborted) return cancelledSpec;
-          if (output.workResult.directive === 'needs_input') return pause('implementer', output.workResult.question, output.sessionId);
-          const parsed = reviewedSpecAuthorResultSchema.safeParse(output.sessionCheckpointResult ??
-            (output.workResult.directive === 'advance' ? output.workResult.result : undefined));
-          if (output.workResult.directive === 'advance' && parsed.success &&
-              exactDispositions(parsed.data.dispositions, current.openIds) && parsed.data.spec.kind === kind &&
-              (!canonicalPath || canonicalPath === parsed.data.spec.relativePath)) {
-            const rendered = renderReviewedSpecCandidate(parsed.data.spec, previousDraft, canonical?.markdown);
-            markdown = rendered.markdown;
-            if (Buffer.from(markdown, 'utf8').toString('utf8') !== markdown) return fail('spec_author_result_invalid');
-            const key = `spec-candidate-${randomUUID()}.md`;
-            await writeFile(join(await scratchRoot(await getWorkspace()), key), markdown, { flag: 'wx', mode: 0o600 });
-            pending = { key, path: rendered.spec.relativePath, digest: digest(markdown),
-              dispositions: parsed.data.dispositions,
-              implementer: output.modelPrincipal?.kind === 'model' ? output.modelPrincipal
-                : { id: `${author.model.provider}:${author.model.model}`, kind: 'model', tenantId: run.tenant },
-              ...(authorAnswer ? { authorAnswer } : {}),
-              ...(output.sessionId ? { implementerSessionId: output.sessionId } : {}) };
-            current.pending = pending;
-            if (current.answer?.role === 'implementer') delete current.answer;
-            await persist();
-            break;
+          let settle: ((acceptedPath?: string) => Promise<void>) | undefined;
+          let acceptedPath: string | undefined;
+          try {
+            const output = await runRole('implementer', attempt, {
+              ...(previousDraft !== undefined ? { revision: digest(previousDraft) } : {}),
+              feedback, priorDispositions: Object.values(current.decisions),
+              ...(authorAnswer ? { answer: authorAnswer } : {}),
+              ...(canonicalPath ? { canonicalPath } : {}), ...(previousDraft ? { previousMarkdown: previousDraft } : {}),
+              ...(attempt ? { correction: 'Return a valid spec envelope and disposition every listed ID exactly once.' } : {})
+            }, callback => { settle = callback; });
+            if (output.workResult.directive === 'cancelled' || input.signal?.aborted) return cancelledSpec;
+            if (output.workResult.directive === 'needs_input') return pause('implementer', output.workResult.question, output.sessionId);
+            const parsed = reviewedSpecAuthorResultSchema.safeParse(output.sessionCheckpointResult ??
+              (output.workResult.directive === 'advance' ? output.workResult.result : undefined));
+            if (output.workResult.directive === 'advance' && parsed.success &&
+                exactDispositions(parsed.data.dispositions, current.openIds) && parsed.data.spec.kind === kind &&
+                (!canonicalPath || canonicalPath === parsed.data.spec.relativePath)) {
+              const rendered = renderReviewedSpecCandidate(parsed.data.spec, previousDraft, canonical?.markdown);
+              markdown = rendered.markdown;
+              if (Buffer.from(markdown, 'utf8').toString('utf8') !== markdown) return fail('spec_author_result_invalid');
+              const key = `spec-candidate-${randomUUID()}.md`;
+              await writeFile(join(await scratchRoot(await getWorkspace()), key), markdown, { flag: 'wx', mode: 0o600 });
+              pending = { key, path: rendered.spec.relativePath, digest: digest(markdown),
+                dispositions: parsed.data.dispositions,
+                implementer: output.modelPrincipal?.kind === 'model' ? output.modelPrincipal
+                  : { id: `${author.model.provider}:${author.model.model}`, kind: 'model', tenantId: run.tenant },
+                ...(authorAnswer ? { authorAnswer } : {}),
+                ...(output.sessionId ? { implementerSessionId: output.sessionId } : {}) };
+              current.pending = pending;
+              if (current.answer?.role === 'implementer') delete current.answer;
+              await persist();
+              acceptedPath = pending.path;
+              break;
+            }
+            if (output.workResult.directive === 'fail' && !isResultFailure(output.workResult.reason)) return fail(output.workResult.reason);
+            if (attempt === 1) return fail('spec_author_result_invalid');
+          } finally {
+            await settle?.(acceptedPath).catch(() => undefined);
           }
-          if (output.workResult.directive === 'fail' && !isResultFailure(output.workResult.reason)) return fail(output.workResult.reason);
-          if (attempt === 1) return fail('spec_author_result_invalid');
         }
       }
       if (!pending || markdown === undefined) return fail('spec_review_checkpoint_invalid');

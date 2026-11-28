@@ -54,6 +54,8 @@ export interface RunRoleWorkInput extends RunWorkInput {
     readonly stillOwns?: () => Promise<boolean>;
   };
   readonly specReview?: SpecReviewSessionInput;
+  /** Host-only: the spec engine settles live author custody after validating and storing the candidate. */
+  readonly deferSpecAuthorConversation?: (settle: (acceptedPath?: string) => Promise<void>) => void;
   readonly ciRepair?: RepairTurnEvidence;
   readonly reviewContext?: ReviewContext;
   readonly toolPolicyMode?: ToolPolicyMode;
