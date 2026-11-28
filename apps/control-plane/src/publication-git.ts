@@ -21,7 +21,7 @@ function sha(stdout: string): string {
 function safePath(path: string): boolean {
   return path.length > 0 && path.length <= 240 && !/[\\\p{C}]/u.test(path) &&
     path.split('/').every(part => part !== '' && part !== '.' && part !== '..') &&
-    !/(?:gh[pousr]_|github_pat_|sk-|AKIA)[a-z\d_-]{8,}/iu.test(path);
+    !/(?:^|[^a-z\d])(?:gh[pousr]_|github_pat_|sk-|AKIA)[a-z\d_-]{8,}/iu.test(path);
 }
 
 /** Materialize review inputs without checking out a branch or running Git filters. */
