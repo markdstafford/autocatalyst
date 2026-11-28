@@ -1634,19 +1634,26 @@ describe('registerControlPlaneRoutes', () => {
     expectNoSentinels(sseResponse.body);
   });
 
-  it('POST /v1/runs/:id/feedback returns 400 for invalid body (non-artifact target)', async () => {
-    const { app, authorization } = await buildServer();
+  it('POST /v1/runs/:id/feedback returns 400 for an anchor on implementation feedback', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    const { app, authorization } = await buildServer({ controlPlane });
     server = app;
 
     const response = await app.inject({
       method: 'POST',
       url: '/v1/runs/run_1/feedback',
       headers: authorization,
-      payload: { target: 'implementation', title: 'Bad target', body: 'This should fail.' }
+      payload: {
+        target: 'implementation',
+        title: 'Missing acceptance criteria',
+        body: 'Please add acceptance criteria.',
+        anchor: { kind: 'artifact', artifactId: 'art_1' }
+      }
     });
 
     expect(response.statusCode).toBe(400);
     expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+    expect(controlPlane.createRunFeedback).not.toHaveBeenCalled();
   });
 
   it('POST /v1/runs/:id/feedback maps not_found to 404', async () => {

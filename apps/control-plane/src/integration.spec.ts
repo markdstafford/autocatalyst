@@ -3476,13 +3476,23 @@ async function seedRunAtImplementationHumanReview(databasePath: string): Promise
     title: 'Reply impl HR topic',
     kind: 'main'
   });
-  const run = await seedRepos.runs.create({
-    topicId: topic.id,
-    owner: hardcodedDevelopmentPrincipal,
-    tenant: hardcodedDevelopmentPrincipal.tenantId,
-    workKind: 'chore',
-    currentStep: 'implementation.human_review',
-    terminal: false
+  const { run } = await seedRepos.runs.recordRunLifecycleStart({
+    run: {
+      topicId: topic.id,
+      owner: hardcodedDevelopmentPrincipal,
+      tenant: hardcodedDevelopmentPrincipal.tenantId,
+      workKind: 'chore',
+      currentStep: 'implementation.human_review',
+      terminal: false
+    },
+    runStep: {
+      phase: 'implementation',
+      step: 'implementation.human_review',
+      role: 'none',
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      durationMs: null
+    }
   });
   seedDb.close();
   return { runId: run.id };
@@ -4268,6 +4278,16 @@ describe('PR lifecycle through the booted control-plane server', () => {
               sourceRoundCount: 1,
               completedAt: now
             } as unknown as Parameters<typeof seedRepos.runSteps.updateCheckpoint>[0]['checkpointResult']
+          });
+          await seedRepos.runSteps.create({
+            runId: run.id,
+            phase: 'implementation',
+            step: 'implementation.human_review',
+            role: 'none',
+            startedAt: now,
+            endedAt: null,
+            durationMs: null,
+            occurrence: { index: 1, attempt: 1 }
           });
           // Startup checks the retained local ref under the canonical host clone.
           const host = join(reposRoot, 'testorg', 'testrepo');

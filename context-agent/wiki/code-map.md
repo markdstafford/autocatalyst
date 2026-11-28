@@ -19,10 +19,14 @@ Last updated: 2026-11-27 (active dispatch cancellation, #154).
   Clients use `getTestingGuideResults`, `saveTestingGuideResults` and `listRunTestResults` in
   `packages/sdk/src/client.ts`. The result methods and `createRunFeedback` encode the run ID as a
   path segment; `packages/sdk/src/client.spec.ts` covers their transport and shared schema parsing.
+  `packages/core/src/routes.spec.ts` checks that implementation feedback with an anchor still
+  returns 400 before reaching the service; the unanchored implementation target is valid.
   OpenAPI lives in `packages/api-contract/src/openapi.ts`.
 - `packages/core/src/testing-guide-results.ts` derives the outcome, seeds by stable check ID, and
   resolves the newest final against its recorded guide revision. The SDK never sees the gate ID.
 - `DefaultOrchestrator` pins the gate occurrence before waiting for the run mutation lock.
+  Server integration fixtures for review replies must seed an open `RunStep` even without a
+  guide; setting only `Run.currentStep` does not create a live gate.
   Its reply path is the only producer of the trusted decision payload; a directive alone cannot
   finalize a pass. `DrizzleRunRepository.recordRunStepTransition` either commits all decision
   effects or removes the closing occurrence's undecided draft. See
