@@ -208,7 +208,7 @@ export interface ConvergenceEngineInput {
   readonly workflow: RunWorkflowDefinition;
   readonly workspace?: WorkspaceContext;
   readonly humanGuidance?: string;
-  readonly ciRepair?: { readonly failedHead: string; readonly failures: readonly import('./code-host.js').RequiredCheckEvidence[] };
+  readonly ciRepair?: import('./reviewed-role-dispatcher.js').RepairTurnEvidence;
   readonly priorCheckpoint?: ConvergenceCheckpoint;
   readonly stillOwns?: () => Promise<boolean>;
 }

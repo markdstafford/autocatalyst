@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -8,7 +8,7 @@ import { DefaultOrchestrator, InMemoryRunEventBus, RunDispatchQueue, applyRunDir
   createPrActivityReader, startRunLifecycle } from '@autocatalyst/core';
 import { DrizzleConversationIngressRepository, DrizzleRepairRepository, createDrizzleDomainRepositories,
   createSqliteDatabase, migrateSqliteDatabase } from '@autocatalyst/persistence';
-import { createPublicationGit } from './publication-git.js';
+import { createPublicationGit, materializePublicationReviewSnapshot } from './publication-git.js';
 import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
 
 const exec = promisify(execFile);
@@ -48,6 +48,31 @@ async function setup(root: string) {
 }
 
 describe('publication Git', () => {
+  it('materializes the pinned tree and diff instead of reading mutable worktree files or links', async () => fixture(async f => {
+    const target = await git(f.work, 'rev-parse', 'HEAD');
+    await symlink('/must-not-read', join(f.work, 'escape'));
+    await git(f.work, 'add', 'escape');
+    const candidate = await f.commit(f.work, 'pinned.txt', 'approved candidate');
+    const treeSha = await git(f.work, 'rev-parse', `${candidate}^{tree}`);
+    await writeFile(join(f.work, 'pinned.txt'), 'mutable working copy');
+    const repoRoot = join(f.work, 'repo');
+    const scratchRoot = join(f.work, 'scratch');
+    // Assemble the managed sibling shape without creating a second Git checkout.
+    const temporary = f.work + '-old';
+    await rename(f.work, temporary);
+    await mkdir(f.work);
+    await rename(temporary, repoRoot);
+    await mkdir(scratchRoot);
+    const review = { occurrenceId: 'review-1', candidateSha: candidate, targetSha: target, treeSha };
+    const snapshot = await materializePublicationReviewSnapshot({ repoRoot, scratchRoot, review });
+    expect(await readFile(join(snapshot.sourceRoot, 'pinned.txt'), 'utf8')).toBe('approved candidate');
+    expect(await readFile(join(snapshot.reviewRoot, 'diff.txt'), 'utf8')).toContain('+approved candidate');
+    await expect(readFile(join(snapshot.sourceRoot, 'escape'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(join(snapshot.reviewRoot, 'special-entries.txt'), 'utf8')).toContain('escape: symbolic link');
+    await expect(materializePublicationReviewSnapshot({ repoRoot, scratchRoot, review: { ...review, treeSha: target } }))
+      .rejects.toThrow('publication_review_tree_invalid');
+  }));
+
   it('pins and integrates the current target and refuses to overwrite a divergent source', async () => fixture(async f => {
     const initial = await f.gitPort.integrate(f.input);
     expect(initial).toMatchObject({ kind: 'integrated', sourceSha: await git(f.work, 'rev-parse', 'HEAD'), headSha: await git(f.work, 'rev-parse', 'HEAD') });

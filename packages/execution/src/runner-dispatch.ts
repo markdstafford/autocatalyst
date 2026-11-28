@@ -28,6 +28,7 @@ export interface AgentRunnerFactoryInput {
   readonly step: string;
   readonly role?: string;
   readonly pinnedProfile?: AgentProfileResolution;
+  readonly onResolvedProfile?: (profile: ResolvedAgentRunnerProfile) => void;
 }
 
 export interface AgentRunnerFactory {
@@ -122,6 +123,8 @@ export function createAgentRunnerFactory(options: CreateAgentRunnerFactoryOption
       // Step f: create connection
       const connection = await createConnection({ profile, credentialReference, telemetryContext });
 
+      // Report the profile only after route, adapter, and connection validation.
+      input.onResolvedProfile?.(profile);
       // Step g: return orchestrator runner
       return createAgentOrchestratorRunner({ adapter, profile, connection, telemetryContext });
     }

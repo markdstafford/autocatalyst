@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
+import type { InferenceSettings, ModelIdentity } from '@autocatalyst/api-contract';
 import type { AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
-import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const probeResources = sqliteTable('probe_resources', {
   id: text('id').primaryKey(),
@@ -267,8 +268,56 @@ export const runWorkspaceMetadata = sqliteTable('run_workspace_metadata', {
   workspaceHandle: text('workspace_handle').notNull(),
   workspaceRepoRoot: text('workspace_repo_root').notNull(),
   provisionedBaseRef: text('provisioned_base_ref'),
+  generation: text('generation').notNull().default(''),
+  enrollmentProof: text('enrollment_proof'),
   createdAt: text('created_at').notNull()
 });
+
+export const agentConversationSlots = sqliteTable('agent_conversation_slots', {
+  tenant: text('tenant').notNull(),
+  runId: text('run_id').notNull().references(() => runs.id, { onDelete: 'cascade' }),
+  step: text('step', { enum: ['spec.author', 'implementation.build'] }).notNull(),
+  role: text('role', { enum: ['implementer', 'reviewer'] }).notNull(),
+  workspaceGeneration: text('workspace_generation').notNull(),
+  storageScope: text('storage_scope'),
+  compatibilityDigest: text('compatibility_digest'),
+  scopeDigest: text('scope_digest'),
+  prIdentity: text('pr_identity'),
+  nativeHandle: text('native_handle'),
+  adapterMetadata: text('adapter_metadata', { mode: 'json' }).$type<{ version: 1 }>(),
+  completedAttemptId: text('completed_attempt_id'),
+  claimingAttemptId: text('claiming_attempt_id'),
+  latestAttemptId: text('latest_attempt_id'),
+  state: text('state', { enum: ['ready', 'in_flight', 'retired'] }).notNull(),
+  version: integer('version').notNull()
+}, t => [
+  primaryKey({ columns: [t.tenant, t.runId, t.step, t.role] }),
+  check('agent_conversation_step_check', sql`${t.step} IN ('spec.author', 'implementation.build')`),
+  check('agent_conversation_role_check', sql`${t.role} IN ('implementer', 'reviewer')`),
+  check('agent_conversation_state_check', sql`${t.state} IN ('ready', 'in_flight', 'retired')`),
+  check('agent_conversation_version_check', sql`${t.version} > 0`),
+  check('agent_conversation_ready_check', sql`${t.state} <> 'ready' OR (${t.nativeHandle} IS NOT NULL AND ${t.completedAttemptId} IS NOT NULL AND ${t.storageScope} IS NOT NULL AND ${t.compatibilityDigest} IS NOT NULL AND ${t.scopeDigest} IS NOT NULL)`),
+  check('agent_conversation_in_flight_check', sql`${t.state} <> 'in_flight' OR ${t.claimingAttemptId} IS NOT NULL`)
+]);
+
+export const reviewedDispatchAttempts = sqliteTable('reviewed_dispatch_attempts', {
+  order: integer('dispatch_order').primaryKey({ autoIncrement: true }),
+  id: text('id').notNull().unique(),
+  tenant: text('tenant').notNull(),
+  runId: text('run_id').notNull().references(() => runs.id, { onDelete: 'cascade' }),
+  occurrenceId: text('occurrence_id').notNull(),
+  step: text('step', { enum: ['spec.author', 'implementation.build'] }).notNull(),
+  role: text('role', { enum: ['implementer', 'reviewer'] }).notNull(),
+  round: integer('round').notNull(),
+  launch: text('launch_json', { mode: 'json' }).$type<{ model: ModelIdentity; inferenceSettings: InferenceSettings; startedAt: string }>(),
+  decision: text('decision', { enum: ['fresh', 'resume', 'fallback', 'retention_disallowed'] }).notNull()
+}, t => [
+  index('reviewed_dispatch_latest_idx').on(t.tenant, t.runId, t.step, t.role, t.order),
+  check('reviewed_dispatch_step_check', sql`${t.step} IN ('spec.author', 'implementation.build')`),
+  check('reviewed_dispatch_role_check', sql`${t.role} IN ('implementer', 'reviewer')`),
+  check('reviewed_dispatch_round_check', sql`${t.round} > 0`),
+  check('reviewed_dispatch_decision_check', sql`${t.decision} IN ('fresh', 'resume', 'fallback', 'retention_disallowed')`)
+]);
 
 export const testResults = sqliteTable('test_results', {
   id: text('id').primaryKey(),

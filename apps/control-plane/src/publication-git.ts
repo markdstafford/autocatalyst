@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { access, realpath } from 'node:fs/promises';
-import { relative, resolve, sep } from 'node:path';
+import { access, lstat, mkdir, mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { fullGitSha, type PublicationGitPort, type PublicationWorkspace } from '@autocatalyst/core';
+import { fullGitSha, type PublicationGitPort, type PublicationReviewSnapshot, type PublicationWorkspace } from '@autocatalyst/core';
 
 const exec = promisify(execFile);
 const timeoutMs = 25_000;
@@ -22,6 +22,64 @@ function safePath(path: string): boolean {
   return path.length > 0 && path.length <= 240 && !/[\\\p{C}]/u.test(path) &&
     path.split('/').every(part => part !== '' && part !== '.' && part !== '..') &&
     !/(?:gh[pousr]_|github_pat_|sk-|AKIA)[a-z\d_-]{8,}/iu.test(path);
+}
+
+/** Materialize review inputs without checking out a branch or running Git filters. */
+export async function materializePublicationReviewSnapshot(input: {
+  repoRoot: string;
+  scratchRoot: string;
+  review: PublicationReviewSnapshot;
+}): Promise<{ sourceRoot: string; reviewRoot: string }> {
+  const repo = await realpath(input.repoRoot);
+  const scratch = await realpath(input.scratchRoot);
+  if (dirname(repo) !== dirname(scratch) || repo !== join(dirname(scratch), 'repo') ||
+      scratch !== join(dirname(repo), 'scratch') || !(await lstat(input.scratchRoot)).isDirectory()) {
+    throw new Error('publication_review_workspace_invalid');
+  }
+  const git = async (...args: string[]) => (await exec('git', ['--no-replace-objects', ...args], {
+    cwd: repo, env: { PATH: process.env['PATH'], GIT_TERMINAL_PROMPT: '0' },
+    timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, encoding: 'buffer'
+  })).stdout;
+  const candidate = fullGitSha.parse(input.review.candidateSha);
+  const target = fullGitSha.parse(input.review.targetSha);
+  const tree = sha((await git('rev-parse', '--verify', `${candidate}^{tree}`)).toString('utf8'));
+  if (input.review.treeSha !== undefined && input.review.treeSha !== tree) throw new Error('publication_review_tree_invalid');
+  const rawList = await git('ls-tree', '-r', '-z', tree);
+  const utf8List = rawList.toString('utf8');
+  if (!Buffer.from(utf8List, 'utf8').equals(rawList)) throw new Error('publication_review_source_invalid');
+  const list = utf8List.split('\0').filter(Boolean);
+  const diff = await git('diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-renames', target, candidate, '--');
+  const reviewRoot = await mkdtemp(join(scratch, 'publication-review-'));
+  const sourceRoot = join(reviewRoot, 'source');
+  await mkdir(sourceRoot, { mode: 0o700 });
+  let total = 0;
+  const specialEntries: string[] = [];
+  const copy = async (entry: string) => {
+    const match = /^(100644|100755|120000|160000) (blob|commit) ([a-f0-9]+)\t(.+)$/u.exec(entry);
+    const mode = match?.[1];
+    const object = fullGitSha.safeParse(match?.[3]);
+    const relativePath = match?.[4];
+    if (!mode || !object.success || !relativePath || !safePath(relativePath) ||
+        relativePath.split('/').some(part => part.toLowerCase() === '.git')) throw new Error('publication_review_source_invalid');
+    if (mode === '160000') {
+      specialEntries.push(`${relativePath}: gitlink at ${object.data}`);
+      return;
+    }
+    const contents = await git('cat-file', 'blob', object.data);
+    total += contents.length;
+    if (total > 256 * 1024 * 1024) throw new Error('publication_review_source_too_large');
+    if (mode === '120000') {
+      specialEntries.push(`${relativePath}: symbolic link to ${JSON.stringify(contents.toString('utf8'))}`);
+      return;
+    }
+    const file = join(sourceRoot, relativePath);
+    await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+    await writeFile(file, contents, { mode: 0o400, flag: 'wx' });
+  };
+  for (let i = 0; i < list.length; i += 8) await Promise.all(list.slice(i, i + 8).map(copy));
+  await writeFile(join(reviewRoot, 'diff.txt'), diff, { mode: 0o400, flag: 'wx' });
+  await writeFile(join(reviewRoot, 'special-entries.txt'), specialEntries.sort().join('\n'), { mode: 0o400, flag: 'wx' });
+  return { sourceRoot, reviewRoot };
 }
 
 export function createPublicationGit(workspacesRoot: string): PublicationGitPort {
@@ -86,6 +144,10 @@ export function createPublicationGit(workspacesRoot: string): PublicationGitPort
   const readCandidate: PublicationGitPort['readCandidate'] = async input => candidate(input).catch(() => null);
   return {
     readCandidate,
+    async readTree(input, commit) {
+      try { return sha(await git(input, ['rev-parse', '--verify', `${fullGitSha.parse(commit)}^{tree}`])); }
+      catch { return null; }
+    },
     async readTarget(input) {
       return remoteHead(input, input.base).catch(() => null);
     },

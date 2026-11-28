@@ -386,3 +386,11 @@ export {
   anthropicUsageTokens, compactUsageGroups, normalizeOpenAIResponse, normalizeSessionUsage,
   openAIUsageTokens, usageBillingKey, usageCount, usageGroup, usageRecord, type NativeUsageAnomaly
 } from './usage-normalization.js';
+
+export * from './native-conversation.js';
+export {
+  acquireNativeHistoryLease, releaseNativeHistoryLease, nativeHistoryLeaseOwner,
+  createPrivateConversationScope, privateConversationScopePath, privateConversationDirectory,
+  type WorkspaceConversationWriter
+} from './internal/workspace-conversation-custody.js';
+export { createWorkspaceLifecycle } from './workspace.js';

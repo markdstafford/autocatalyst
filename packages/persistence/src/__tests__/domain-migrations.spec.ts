@@ -103,6 +103,10 @@ describe('domain schema migrations', () => {
           state text NOT NULL, branch text NOT NULL, created_at text NOT NULL, updated_at text NOT NULL
         );
         CREATE TABLE run_steps (id text PRIMARY KEY NOT NULL, run_id text NOT NULL);
+        CREATE TABLE run_workspace_metadata (
+          run_id text PRIMARY KEY NOT NULL REFERENCES runs(id), workspace_handle text NOT NULL,
+          workspace_repo_root text NOT NULL, created_at text NOT NULL, provisioned_base_ref text
+        );
         CREATE TABLE sessions (
           id text PRIMARY KEY NOT NULL, run_id text NOT NULL, phase text,
           step text NOT NULL, role text NOT NULL, round integer NOT NULL,
@@ -123,6 +127,7 @@ describe('domain schema migrations', () => {
       const costJson = JSON.stringify({ model: { provider: 'openai', model: 'gpt-4.1' }, usd: 125, tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } });
       rawDb.prepare(`INSERT INTO runs (id, topic_id, owner_json, tenant, work_kind, current_step, terminal, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run('run_seq', 'topic_seq', '{}', 'tenant1', 'feature', 'spec.author', 0, now, now);
+      rawDb.prepare('INSERT INTO run_workspace_metadata VALUES (?, ?, ?, ?, ?)').run('run_seq', 'work', '/work/repo', now, 'origin/main');
       rawDb.prepare(`INSERT INTO pull_requests VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run('legacy-pr', 'run_seq', '{}', 'tenant1', 'github', 1, 'https://github.com/test/repo/pull/1', 'open', 'feature/test', now, now);
       const insertSession = rawDb.prepare(`INSERT INTO sessions (id, run_id, phase, step, role, round, model_json, inference_settings_json, started_at, ended_at, duration_ms, tokens_json, usage_available, assistant_turn_count, tool_call_count, outcome, cost_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -143,6 +148,9 @@ describe('domain schema migrations', () => {
         expect(internal.client.prepare('SELECT autocatalyst_head_sha FROM pull_requests WHERE id = ?').get('legacy-pr'))
           .toEqual({ autocatalyst_head_sha: null });
         expect(internal.client.prepare('SELECT count(*) AS total FROM pr_ci_repair_heads').get()).toEqual({ total: 0 });
+        expect(internal.client.prepare('SELECT generation, enrollment_proof FROM run_workspace_metadata WHERE run_id = ?').get('run_seq'))
+          .toEqual({ generation: expect.stringMatching(/^[a-f0-9]{32}$/u), enrollment_proof: null });
+        expect(internal.client.prepare('SELECT count(*) AS n FROM agent_conversation_slots').get()).toEqual({ n: 0 });
         expect(internal.client.prepare('SELECT tokens_json, cost_json, usage_json FROM sessions WHERE id = ?').get('sess_a'))
           .toEqual({ tokens_json: tokens, cost_json: costJson, usage_json: null });
       } finally {

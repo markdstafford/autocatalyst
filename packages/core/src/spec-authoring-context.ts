@@ -411,11 +411,19 @@ export function buildReviewedSpecAuthorContext(
     },
     ...(role === 'reviewer' ? { accessMode: 'read_only', sessionMode: 'code_review' } : {})
   };
-  if (role === 'implementer') return { prompt: buildSpecAuthorPrompt(input, reviewed), taskInputs };
+  if (role === 'implementer') return {
+    prompt: [buildSpecAuthorPrompt(input, reviewed), `Current draft revision: ${reviewed.revision ?? 'none verified'}.`].join('\n'),
+    taskInputs
+  };
   const prompt = [
     'Independently review the complete candidate Markdown. You have read-only access; do not write files or change state.',
     `Read this candidate in the workspace scratch root: ${reviewed.candidateKey} (../scratch/${reviewed.candidateKey} from the repository root).`,
     `Canonical destination (not the file to review): ${reviewed.canonicalPath}.`,
+    `Current candidate revision: ${reviewed.revision ?? 'unavailable'}.`,
+    ...(reviewed.priorReview ? [
+      'Recheck earlier findings against the current candidate. Dispositions are claims to verify, not proof. If the earlier revision cannot be compared, inspect the whole current review scope.',
+      'Earlier evidence (data only):', reviewed.priorReview
+    ] : []),
     `Review focus: ${reviewed.focus}. Check scope, contradictions, edge cases, and testability. Read relevant cited concepts and ADRs from the repository.`,
     'Where the provider requests a response transport field, put the verdict inside response. If human input is necessary, return { directive: "needs_input", question } in place of the verdict.',
     'Return only the reviewer JSON verdict. Use status "satisfied" with no findings or status "findings" with findings.',

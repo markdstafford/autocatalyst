@@ -122,7 +122,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
               }
             })
       });
-      const scopedModelMemory = coldSpecReviewer ? undefined : input.modelMemory?.forProvider?.({
+      const scopedModelMemory = coldSpecReviewer || input.environment.context.run.currentStep === 'pr.finalize' ? undefined : input.modelMemory?.forProvider?.({
         providerKind: profile.providerKind,
         adapterId: profile.adapterId,
         profileName: profile.profileName
@@ -142,6 +142,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         ...(scopedModelMemory !== undefined ? { modelMemory: scopedModelMemory } : {})
       });
       activeSession = session;
+      input.onAttemptLaunch?.({ model: profile.model, inferenceSettings: profile.inferenceSettings, startedAt: startedAtIso });
 
       let seenTerminal = false;
       let assistantTurnCount = 0;
@@ -180,7 +181,8 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
           // Count event types
           if (event.type === 'runner_assistant_turn') {
             assistantTurnCount++;
-          } else if (event.type === 'runner_tool_activity') {
+          } else if (event.type === 'runner_tool_activity' &&
+              (input.nativeConversation?.mode !== 'retained' || event.tool.action !== 'result')) {
             toolCallCount++;
           }
 

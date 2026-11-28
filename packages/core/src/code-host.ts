@@ -92,7 +92,11 @@ export interface MergeCodeHostPullRequestInput {
   readonly strategy?: MergeStrategy;
 }
 
-export type RequiredCheckEvidence = Readonly<{ id: string; name: string } & (
+export type RequiredCheckEvidence = Readonly<{
+  id: string; name: string;
+  summary?: string;
+  excerpts?: readonly { sequence: number; text: string }[];
+} & (
   | { kind: 'check_run'; conclusion: 'failure' | 'timed_out' | 'action_required' }
   | { kind: 'legacy_status'; conclusion: 'failure' | 'error' }
 )>;

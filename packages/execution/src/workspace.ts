@@ -4,6 +4,7 @@ import { createNodeWorkspaceDriver } from './internal/workspace-driver.js';
 import { createWorkspaceProvisioner } from './internal/workspace-provisioner.js';
 import { createWorkspacePruner } from './internal/workspace-pruner.js';
 import { createWorkspaceTeardown } from './internal/workspace-teardown.js';
+import type { WorkspaceConversationWriter } from './internal/workspace-conversation-custody.js';
 
 export type WorkspaceRunKind = 'feature' | 'enhancement' | 'bug' | 'chore' | 'file_issue' | 'question';
 export type ImplementingWorkspaceRunKind = Extract<WorkspaceRunKind, 'feature' | 'enhancement' | 'bug' | 'chore'>;
@@ -171,11 +172,17 @@ export function summarizeWorkspaceCause(cause: unknown): WorkspaceErrorCauseSumm
   };
 }
 
-export async function provisionWorkspace(request: ProvisionWorkspaceRequest): Promise<ProvisionWorkspaceResult> {
+/** Compose the same guarded pruner for rollback, reset, teardown and scoped reconciliation. */
+export function createWorkspaceLifecycle(conversationWriterExited?: (marker: WorkspaceConversationWriter) => Promise<boolean>) {
   const driver = createNodeWorkspaceDriver();
-  const pruner = createWorkspacePruner({ driver });
+  const pruner = createWorkspacePruner({ driver, ...(conversationWriterExited ? { conversationWriterExited } : {}) });
   const provisioner = createWorkspaceProvisioner({ driver, pruner });
-  return provisioner.provisionWorkspace(request);
+  const teardown = createWorkspaceTeardown({ driver, pruner });
+  return { ...pruner, provisionWorkspace: provisioner.provisionWorkspace, teardownWorkspace: teardown.teardownWorkspace };
+}
+
+export async function provisionWorkspace(request: ProvisionWorkspaceRequest): Promise<ProvisionWorkspaceResult> {
+  return createWorkspaceLifecycle().provisionWorkspace(request);
 }
 
 // --- Prune types ---
@@ -214,7 +221,8 @@ export type WorkspacePruneErrorCode =
   | 'missing_host_repository'
   | 'directory_remove_failed'
   | 'worktree_remove_failed'
-  | 'worktree_admin_prune_failed';
+  | 'worktree_admin_prune_failed'
+  | 'conversation_writer_unverified';
 
 export interface WorkspacePruneErrorContext {
   readonly runId?: string;
@@ -325,14 +333,9 @@ export class WorkspaceTeardownError extends Error {
 // --- Public entrypoints ---
 
 export async function pruneWorkspacePath(request: PruneWorkspacePathRequest): Promise<WorkspacePruneResult> {
-  const driver = createNodeWorkspaceDriver();
-  const pruner = createWorkspacePruner({ driver });
-  return pruner.pruneWorkspacePath(request);
+  return createWorkspaceLifecycle().pruneWorkspacePath(request);
 }
 
 export async function teardownWorkspace(request: TeardownWorkspaceRequest): Promise<WorkspaceTeardownResult> {
-  const driver = createNodeWorkspaceDriver();
-  const pruner = createWorkspacePruner({ driver });
-  const teardown = createWorkspaceTeardown({ driver, pruner });
-  return teardown.teardownWorkspace(request);
+  return createWorkspaceLifecycle().teardownWorkspace(request);
 }

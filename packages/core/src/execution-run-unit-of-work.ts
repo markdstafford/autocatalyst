@@ -1,6 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import type { ExecutionContext, JsonValue, Principal } from '@autocatalyst/api-contract';
 import {
   RunnerProtocolError,
+  NativeResumeRefused,
+  type NativeConversationTurn,
+  type MaterializedExecutionEnvironment,
+  type ResolvedAgentRunnerProfile,
   PreTerminalRunnerFailure,
   type ExecutionBoundaryEvent,
   type DirectCallRequest,
@@ -43,9 +48,20 @@ export interface SessionRetryPolicyOptions {
   readonly baseDelayMs?: number;
 }
 
+export interface ReviewedAttemptPort {
+  prepare(input: { attemptId: string; fallback: boolean; environment: MaterializedExecutionEnvironment; profile?: ResolvedAgentRunnerProfile }): Promise<NativeConversationTurn | undefined>;
+  launched?(attemptId: string, launch: Pick<RunnerSessionMetadata, 'model' | 'inferenceSettings' | 'startedAt'>): void;
+  finish(input: { attemptId: string; accepted: boolean; checkpoint?: JsonValue; beforeLaunch?: boolean }): Promise<void>;
+  freshHandoff?: string;
+}
+
 export interface ExecutionRunUnitOfWorkOptions {
   readonly execute: ExecutionEntryPoint;
   readonly resolveContext: (input: RunWorkInput) => Promise<ExecutionContext>;
+  readonly reviewedAttempt?: (context: ExecutionContext) => ReviewedAttemptPort | undefined;
+  readonly prepareFreshConversation?: (
+    environment: MaterializedExecutionEnvironment, profile?: ResolvedAgentRunnerProfile
+  ) => Promise<Extract<NativeConversationTurn, { mode: 'fresh_only' }>>;
   readonly resolveExecutionMode?: (
     input: RunWorkInput,
     context: ExecutionContext
@@ -119,7 +135,8 @@ export interface ExecutionRunUnitOfWork extends RunUnitOfWork {
 
 function deriveRole(input: RunWorkInput): string {
   const roleInput = input as RunRoleWorkInput;
-  return typeof roleInput.role === 'string' && roleInput.role.length > 0 ? roleInput.role : 'implementer';
+  return typeof roleInput.role === 'string' && roleInput.role.length > 0 ? roleInput.role
+    : input.run.currentStep === 'pr.finalize' ? 'reviewer' : 'implementer';
 }
 
 function deriveRound(input: RunWorkInput): number {
@@ -172,7 +189,8 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
         : { mode: 'agent' as const };
 
       const privateSpecResult = (input as RunRoleWorkInput).specReview !== undefined;
-      if (modeResolution.mode === 'direct' && privateSpecResult) {
+      const reviewed = options.reviewedAttempt?.(context);
+      if (modeResolution.mode === 'direct' && (privateSpecResult || reviewed || input.run.currentStep === 'pr.finalize')) {
         return { workResult: { directive: 'fail', reason: 'route_mode_mismatch' } };
       }
       if (modeResolution.mode === 'direct') {
@@ -267,7 +285,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       // Record a durable failed session row from the cached pre-terminal metadata. Persistence
       // failures here are logged but must never replace the original sanitized terminal reason.
       async function recordPreTerminalFailedSession(
-        preTerminalMeta: RunnerSessionMetadata
+        preTerminalMeta: RunnerSessionMetadata, attemptId?: string
       ): Promise<void> {
         if (options.sessions === undefined) return;
         try {
@@ -276,6 +294,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
             {
               runId: input.runId,
               phase: derivePhase(input),
+              ...(attemptId ? { attemptId } : {}),
               step: input.run.currentStep,
               role: deriveRole(input) as 'implementer' | 'reviewer',
               round: deriveRound(input),
@@ -310,10 +329,34 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
 
       let consumeResult: Awaited<ReturnType<typeof consumeRunnerEvents>>;
       let retriesUsed = 0;
+      let fallback = false;
+      let attemptId: string | undefined;
+      const finalReview = input.run.currentStep === 'pr.finalize';
+      let nativeMode: NativeConversationTurn['mode'] | undefined;
+      const finish = async (accepted: boolean, checkpoint?: JsonValue, beforeLaunch?: boolean) => {
+        if (attemptId && reviewed) await reviewed.finish({ attemptId, accepted,
+          ...(checkpoint !== undefined ? { checkpoint } : {}), ...(beforeLaunch ? { beforeLaunch } : {}) }).catch(() => undefined);
+      };
       // Bounded session-retry loop. Breaks out on a terminal result (advance/needs_input/fail) and
       // returns a fail directive when a transient session failure cannot be recovered.
       for (;;) {
+        attemptId = reviewed || finalReview ? `sess_${randomUUID()}` : undefined;
+        nativeMode = undefined;
+        const id = attemptId;
         const events = options.execute.execute({ context, correlationId: input.runId,
+          ...(id ? { attemptId: id } : {}),
+          ...(reviewed && id ? {
+            ...(reviewed.freshHandoff ? { freshHandoff: reviewed.freshHandoff } : {}),
+            onAttemptLaunch: launch => reviewed.launched?.(id, launch),
+            prepareConversation: async (environment: MaterializedExecutionEnvironment, profile?: ResolvedAgentRunnerProfile) => {
+              const native = await reviewed.prepare({ attemptId: id, fallback, environment, ...(profile ? { profile } : {}) });
+              nativeMode = native?.mode;
+              return native;
+            }
+          } : finalReview ? options.prepareFreshConversation
+            ? { prepareConversation: options.prepareFreshConversation }
+            : { nativeConversation: { mode: 'fresh_only', verifiedNonPersistence: false } as const }
+          : {}),
           ...(privateSpecResult && retriesUsed > 0 ? { transportRetry: retriesUsed } : {}) });
         const tapped = onEvent === undefined || privateSpecResult
           ? events
@@ -338,13 +381,15 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
           break;
         } catch (error) {
           if (error instanceof RunnerProtocolError) {
+            await finish(false);
             throw error;
           }
           // A RunnerProtocolError wrapped in PreTerminalRunnerFailure (because the runner cached
           // metadata before the protocol violation) must still propagate as a protocol error,
           // not be downgraded to an ordinary run failure.
           if (error instanceof PreTerminalRunnerFailure && error.cause instanceof RunnerProtocolError) {
-            await recordPreTerminalFailedSession(error.sessionMetadata);
+            await recordPreTerminalFailedSession(error.sessionMetadata, attemptId);
+            await finish(false);
             throw error.cause;
           }
           // For pre-terminal runner failures, record a failed session row from the cached metadata.
@@ -352,11 +397,19 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
           const actualError = error instanceof PreTerminalRunnerFailure ? error.cause : error;
           const reason = safeFailureReasonFromError(actualError) ?? 'Runner failed before terminal result.';
 
-          if (preTerminalMeta !== undefined) {
-            await recordPreTerminalFailedSession(preTerminalMeta);
+          const refusal = actualError instanceof NativeResumeRefused ? actualError : undefined;
+          if (preTerminalMeta !== undefined && refusal?.launched !== false) {
+            await recordPreTerminalFailedSession(preTerminalMeta, attemptId);
+          }
+          await finish(false, undefined, refusal?.launched === false);
+          if (refusal && (nativeMode === 'retained' || nativeMode === 'in_memory') && !fallback &&
+              !(await options.isRunCanceled?.(input.runId))) {
+            fallback = true;
+            retriesUsed += 1;
+            continue;
           }
 
-          if (isRetryableSessionFailure(error)) {
+          if (nativeMode !== 'retained' && nativeMode !== 'in_memory' && !fallback && isRetryableSessionFailure(error)) {
             if (retriesUsed >= maxSessionRetries) {
               // Budget exhausted: fail through the normal run-failure flow with a safe reason so
               // POST /v1/runs/:id/recover remains available.
@@ -390,6 +443,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
             {
               runId: input.runId,
               phase: derivePhase(input),
+              ...(attemptId ? { attemptId } : {}),
               step: input.run.currentStep,
               role: deriveRole(input) as 'implementer' | 'reviewer',
               round: deriveRound(input),
@@ -406,13 +460,15 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
               ...(meta.toolCallCount !== undefined ? { toolCallCount: meta.toolCallCount } : {})
             }
           );
-          if (privateSpecResult) return { ...consumeResult, sessionId: session.id,
+          await finish(outcome === 'succeeded' && consumeResult.workResult.directive === 'advance', consumeResult.checkpointResult);
+          if (privateSpecResult || reviewed) return { ...consumeResult, sessionId: session.id,
             modelPrincipal: { id: `${meta.model.provider}:${meta.model.model}`, kind: 'model', tenantId: input.tenant } };
         } catch (recordError) {
           if (recordError instanceof ExecutionSessionRecordingError) {
             // For advance and needs_input results: session persistence failure fails the dispatch.
             // For fail results: log safely and preserve the original reason.
             if (consumeResult.workResult.directive === 'advance' || consumeResult.workResult.directive === 'needs_input') {
+              await finish(false);
               return { workResult: { directive: 'fail' as const, reason: 'session_persistence_failed' } };
             }
             // fail result: log and keep original
@@ -431,6 +487,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
         }
       }
 
+      await finish(false);
       return consumeResult;
     }
   };

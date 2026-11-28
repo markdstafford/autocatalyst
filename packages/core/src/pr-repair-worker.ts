@@ -1,7 +1,7 @@
 import type { JsonValue, PullRequest, Run, RunStep } from '@autocatalyst/api-contract';
 import type { ConvergenceEngineResult } from './convergence-engine.js';
 import { buildConvergenceEscalationPause } from './convergence-checkpoint.js';
-import { buildPullRequestFinalizeCheckpoint } from './pr-finalize.js';
+import { buildPullRequestFinalizeCheckpoint, type PublicationReviewSnapshot } from './pr-finalize.js';
 import { validatePullRequestFinalizeResult } from './pr-finalize-result-validation.js';
 import type { OrchestratedRunResult, RunWorkResult } from './orchestrator.js';
 import { exactRepairBinding, findCurrentRepair, type RepairDecision, type RepairMove, type RepairRepository } from './pr-ci-repair.js';
@@ -19,8 +19,9 @@ export interface RepairWorkerDependencies {
   readonly workspace: (run: Run) => Promise<PublicationWorkspace>;
   readonly observe: (run: Run, pr: PullRequest, ci: boolean) => Promise<PullRequestReadOutcome>;
   readonly transition: (input: RepairMove) => ReturnType<RepairRepository['move']>;
-  readonly build: (run: Run, step: RunStep, repair: RepairDecision, stillOwns: () => Promise<boolean>) => Promise<ConvergenceEngineResult>;
-  readonly review: (run: Run) => Promise<RunWorkResult>;
+  readonly build: (run: Run, step: RunStep, repair: RepairDecision, stillOwns: () => Promise<boolean>,
+    binding: NonNullable<import('./reviewed-role-dispatcher.js').RepairTurnEvidence['prBinding']>) => Promise<ConvergenceEngineResult>;
+  readonly review: (run: Run, snapshot: PublicationReviewSnapshot) => Promise<RunWorkResult>;
   readonly onWorkspaceDrained?: (run: Run) => Promise<void>;
 }
 
@@ -116,7 +117,9 @@ export async function executeRepair(
     const expectedCandidate = active.candidateSha ?? attempt.headSha;
     if (await deps.git.readCandidate(workspace) !== expectedCandidate) return await stop('repair_workspace_not_ready');
     if (!await stillOwns()) return result;
-    const build = await deps.build(result.run, result.runStep, active, stillOwns);
+    const build = await deps.build(result.run, result.runStep, { ...active, failures: initial.failures }, stillOwns, {
+      repository: workspace.repository.toLowerCase(), id: pr.id, number: pr.number, branch: workspace.branch
+    });
     if (!await stillOwns()) return result;
     const built = await deps.git.readCandidate(workspace);
     if (built === null) return await stop('repair_workspace_not_ready');
@@ -151,7 +154,12 @@ export async function executeRepair(
         });
       }
       if (await deps.git.sameTree(workspace, attempt.headSha, integration.headSha)) return await stop('repair_no_change');
-      const review = await deps.review(result.run);
+      const treeSha = await deps.git.readTree?.(workspace, integration.headSha);
+      if (treeSha === null || !await stillOwns()) return await stop('repair_workspace_not_ready');
+      const review = await deps.review(result.run, {
+        occurrenceId: result.runStep.id, candidateSha: integration.headSha, targetSha: integration.targetSha,
+        ...(treeSha ? { treeSha } : {})
+      });
       if (!await stillOwns()) return result;
       if (review.directive === 'needs_input') return await stop('repair_final_review_blocked');
       if (review.directive !== 'advance') return await stop('repair_final_review_failed');
@@ -188,7 +196,8 @@ export async function executeRepair(
           })
         }, { clock: deps.clock }) as Record<string, JsonValue>,
         attestation: { repository: workspace.repository, branch: workspace.branch, base: workspace.base,
-          targetSha: target, reviewedSha: head, publishSha: head }
+          targetSha: target, reviewedSha: head, publishSha: head,
+          ...(treeSha ? { reviewedTree: treeSha, reviewOccurrenceId: result.runStep.id } : {}) }
       };
       if (!await move({ state: 'publishing', publishHeadSha: head, checkpoint: attestedCheckpoint }) ||
           !await stillOwns()) return result;

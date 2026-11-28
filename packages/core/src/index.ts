@@ -397,5 +397,7 @@ export * from './pr-lifecycle.js';
 export * from './execution-session-recorder.js';
 
 export * from './pr-publication.js';
+export * from './reviewed-handoff.js';
+export type { ReviewedAttemptPort } from './execution-run-unit-of-work.js';
 export * from './pr-ci-repair.js';
 export * from './pr-system-activity.js';

@@ -5,6 +5,24 @@ import type { CumulativeImplementationSummary } from './implementation-summary.j
 
 export type { PullRequestFinalizeFinding, PullRequestFinalizeResult };
 
+export interface PublicationReviewSnapshot {
+  readonly occurrenceId: string;
+  readonly candidateSha: string;
+  readonly targetSha: string;
+  readonly treeSha?: string;
+}
+
+export function publicationReviewSnapshotPrompt(snapshot: PublicationReviewSnapshot): string {
+  return [
+    'Pinned publication review (authoritative):',
+    `- Review occurrence: ${snapshot.occurrenceId}`,
+    `- Integrated candidate commit: ${snapshot.candidateSha}`,
+    `- Integrated tree: ${snapshot.treeSha ?? 'identified by the candidate commit'}`,
+    `- Target commit: ${snapshot.targetSha}`,
+    `- Inspect source from ${snapshot.candidateSha} and compare ${snapshot.targetSha} to ${snapshot.candidateSha}. Do not use mutable refs or prior review output.`
+  ].join('\n');
+}
+
 export interface PullRequestFinalizePromptInput {
   readonly runId: string;
   readonly workKind: string;

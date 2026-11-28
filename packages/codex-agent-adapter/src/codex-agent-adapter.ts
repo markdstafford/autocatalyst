@@ -90,6 +90,7 @@ export interface CodexNativeEvent {
 }
 
 export interface CodexSessionLaunchOptions {
+  readonly conversation?: import('@autocatalyst/execution').NativeConversationTurn;
   readonly onUsage?: (usage: AgentTokenUsage, anomalies?: readonly CodexAccountingAnomaly[]) => void;
   readonly prompt: string;
   readonly instructions: string;
@@ -102,7 +103,7 @@ export interface CodexSessionLaunchOptions {
   readonly sandbox: CodexSandboxValue;
   readonly allowedTools?: string[];
   readonly config?: Record<string, unknown>;
-  readonly auth: { readonly mode: CodexAuthMode };
+  readonly auth: { readonly mode: CodexAuthMode; readonly accountFingerprint?: string };
   readonly skills?: readonly CodexSkillMount[];
   readonly structuredResult?: CodexStructuredResultDefinition;
 }
@@ -680,7 +681,11 @@ export function createCodexAgentAdapter(
           // Enterprise sign-in probe (never reads/logs raw credentials). No
           // fallback to OPENAI_API_KEY or any other account.
           // --------------------------------------------------------------
-          const authResult = await probeAuth({ env: safeEnvironment, signal: cancellation.signal, ...(cwd !== undefined ? { cwd } : {}) });
+          const supervised = runInput.nativeConversation?.mode === 'retained' &&
+            runInput.nativeConversation.supervisedProcess !== undefined;
+          // The supervised App Server checks plan and exact account on the actual connection.
+          const authResult = supervised ? { status: 'authenticated' as const, accountType: 'business' as const }
+            : await probeAuth({ env: safeEnvironment, signal: cancellation.signal, ...(cwd !== undefined ? { cwd } : {}) });
           if (authResult.status !== 'authenticated') {
             safeLog('error', 'codex.adapter.auth_failed', {
               runId,
@@ -733,6 +738,7 @@ export function createCodexAgentAdapter(
           const instructions = instructionParts.join('\n\n');
 
           const native = launch({
+            ...(runInput.nativeConversation ? { conversation: runInput.nativeConversation } : {}),
             prompt,
             instructions,
             model: profile.model.model,
@@ -748,7 +754,12 @@ export function createCodexAgentAdapter(
               tokenUsage = usage;
               for (const code of anomalies ?? []) safeLog('warn', 'codex.adapter.invalid_accounting', { runId, step, code });
             },
-            auth: { mode: authMode },
+            auth: {
+              mode: authMode,
+              ...(runInput.nativeConversation?.mode === 'in_memory' &&
+                'accountFingerprint' in authResult && typeof authResult.accountFingerprint === 'string'
+                ? { accountFingerprint: authResult.accountFingerprint } : {})
+            },
             ...(skillMaterialization.mounts.length > 0 ? { skills: skillMaterialization.mounts } : {}),
             ...(structuredResult !== undefined ? { structuredResult } : {})
           });

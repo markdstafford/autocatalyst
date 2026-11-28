@@ -46,6 +46,13 @@ export interface ExecutionEntryPointInput {
   readonly correlationId?: string;
   readonly modelMemory?: AgentModelMemoryContinuity;
   readonly transportRetry?: number;
+  readonly attemptId?: string;
+  readonly freshHandoff?: string;
+  readonly onAttemptLaunch?: import('./runner.js').RunnerRunInput['onAttemptLaunch'];
+  readonly nativeConversation?: import('./native-conversation.js').NativeConversationTurn;
+  readonly prepareConversation?: (environment: MaterializedExecutionEnvironment,
+    profile?: import('./agent-provider-adapter.js').ResolvedAgentRunnerProfile) =>
+    Promise<import('./native-conversation.js').NativeConversationTurn | undefined>;
 }
 
 export interface NoExecutionResultValidationConfig {
@@ -130,8 +137,20 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
         }
       }
 
+      const nativeConversation = input.prepareConversation ? await input.prepareConversation(environment) : input.nativeConversation;
+      const freshHandoff = (input.prepareConversation && nativeConversation === undefined) ||
+        (nativeConversation?.mode === 'retained' && nativeConversation.resumeId) ||
+        (nativeConversation?.mode === 'in_memory' && nativeConversation.resource) ? undefined : input.freshHandoff;
+      const runnerEnvironment = freshHandoff ? {
+        ...environment,
+        context: { ...environment.context, task: {
+          ...environment.context.task, prompt: [environment.context.task.prompt, freshHandoff].join('\n\n')
+        } }
+      } : environment;
       const runnerInput = {
-        environment,
+        environment: runnerEnvironment,
+        ...(nativeConversation !== undefined ? { nativeConversation } : {}),
+        ...(input.onAttemptLaunch ? { onAttemptLaunch: input.onAttemptLaunch } : {}),
         ...(input.correlationId !== undefined ? { correlationId: input.correlationId } : {}),
         ...(resolvedCapture !== undefined ? { structuredResultCapture: resolvedCapture } : {}),
         ...(input.modelMemory !== undefined ? { modelMemory: input.modelMemory } : {})

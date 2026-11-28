@@ -14,7 +14,7 @@ const fixture = `
 const fs = require('node:fs');
 if (process.argv.includes('--version')) { console.log('codex-cli ' + (process.env.AC_MODE === 'version' ? '0.0.0' : '0.171.0')); process.exit(); }
 if (process.argv.includes('--sandbox') || process.env.OPENAI_API_KEY) process.exit(7);
-let initialized = false, ready = false, sandbox;
+let initialized = false, ready = false, sandbox, selected;
 function send(value) { process.stdout.write(JSON.stringify(value)+'\\n'); }
 require('node:readline').createInterface({input:process.stdin}).on('line', line => {
  const p=JSON.parse(line), v=p.params;
@@ -27,10 +27,28 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
  else if (p.method === 'thread/start') {
   if (fs.realpathSync(v.cwd) !== fs.realpathSync(process.cwd()) || v.approvalPolicy !== 'never' || v.allowProviderModelFallback !== false) process.exit(9);
   if (v.config['mcp_servers.personal.enabled'] !== false) process.exit(10);
-  sandbox=v.sandbox;
+  if (v.ephemeral !== (process.env.AC_MODE !== 'retained')) process.exit(12);
+  selected=v.permissions;
+  sandbox=v.sandbox || 'read-only';
+  if (selected && (v.sandbox || v.config.permissions[selected].network.enabled !== false ||
+                   v.config.permissions[selected].filesystem[v.cwd+'-history'] !== 'deny')) process.exit(15);
   respond({thread:{id:'thread_fixture'},model:process.env.AC_MODE==='mismatch'?'unexpected':v.model,
-    ...(process.env.AC_MODE==='absent' ? {} : {modelProvider:'openai'}),sandbox:{type:sandbox==='read-only'?'readOnly':'workspaceWrite'}});
+    ...(process.env.AC_MODE==='absent' ? {} : {modelProvider:'openai'}), cwd:v.cwd,approvalPolicy:v.approvalPolicy,
+    ...(selected ? {activePermissionProfile:{id:selected,extends:':read-only'}} : {}),
+    sandbox:{type:sandbox==='read-only'?'readOnly':'workspaceWrite',networkAccess:false}});
+ } else if (p.method === 'thread/resume') {
+  selected=v.permissions;
+  if (v.excludeTurns !== true || selected !== 'autocatalyst-retained' || v.sandbox || v.approvalPolicy !== 'never') process.exit(13);
+  if (process.env.AC_MODE==='missing') {
+   send({id:p.id,error:{code:-32600,message:'no rollout found for thread id '+v.threadId}});
+  } else {
+   send({method:'item/completed',params:{threadId:v.threadId,turnId:'old_turn',item:{type:'agentMessage',id:'old',text:'old output'}}});
+   respond({thread:{id:process.env.AC_MODE==='wrong-thread'?'wrong':v.threadId},model:v.model,modelProvider:'openai',
+     cwd:v.cwd,approvalPolicy:v.approvalPolicy,sandbox:{type:'readOnly',networkAccess:false},
+     ...(process.env.AC_MODE==='wrong-permissions' ? {} : {activePermissionProfile:{id:selected,extends:':read-only'}})});
+  }
  } else if (p.method === 'turn/start') {
+  if (selected && (v.permissions !== selected || v.sandboxPolicy)) process.exit(16);
   fs.writeFileSync('turn-started','yes');
   if (process.env.AC_MODE==='hang') return;
   const counters={inputTokens:100,cachedInputTokens:60,outputTokens:10,reasoningOutputTokens:4};
@@ -39,7 +57,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   if (v.input.some(i=>i.type==='skill')) fs.writeFileSync('skill-input.json',JSON.stringify(v.input));
   send({method:'item/started',params:{threadId:v.threadId,turnId:'turn_fixture',item:{type:'commandExecution'}}});
   send({method:'item/completed',params:{threadId:v.threadId,turnId:'turn_fixture',item:{type:'commandExecution'}}});
-  send({method:'item/completed',params:{threadId:v.threadId,turnId:'turn_fixture',item:{type:'agentMessage',text:process.env.AC_MODE==='badjson'?'not JSON':(process.env.AC_SPEC_RESULT || '{"status":"satisfied","findings":[]}')}}});
+  send({method:'item/completed',params:{threadId:v.threadId,turnId:'turn_fixture',item:{type:'agentMessage',id:'message',text:process.env.AC_MODE==='badjson'?'not JSON':(process.env.AC_SPEC_RESULT || '{"status":"satisfied","findings":[]}')}}});
   send({method:'thread/tokenUsage/updated',params:{threadId:v.threadId,turnId:'turn_fixture',tokenUsage:{total:counters,last:counters}}});
   if (process.env.AC_MODE==='timeout-with-usage') { respond({turn:{id:'turn_fixture'}}); return; }
   send({method:'turn/completed',params:{threadId:v.threadId,turn:{id:'turn_fixture',status:process.env.AC_MODE==='failed'?'failed':'completed'}}});
@@ -62,6 +80,51 @@ function launchOptions(cwd: string, mode = ''): CodexSessionLaunchOptions {
 }
 
 describe('Codex app-server wire boundary', () => {
+  it('applies the named history deny profile to an ephemeral turn', async () => {
+    await withCli(async (binary, cwd) => {
+      const events: CodexNativeEvent[] = [];
+      for await (const event of codexSessionLaunch(binary)({
+        ...launchOptions(cwd), conversation: {
+          mode: 'fresh_only', verifiedNonPersistence: true, protectedHistoryRoots: [cwd + '-history']
+        }
+      })) events.push(event);
+      expect(events.some(event => event.type === 'result')).toBe(true);
+    });
+  });
+
+  it('starts a persisted thread and uses only the acknowledged turn after resume', async () => {
+    await withCli(async (binary, cwd) => {
+      const completed: string[] = [];
+      const retained = { mode: 'retained', verifyLaunch: async () => true, verifyAccount: async () => true,
+        protectedHistoryRoots: [cwd + '-history'],
+        completed: (id: string) => { completed.push(id); } } as const;
+      const launch = codexSessionLaunch(binary);
+      for await (const _ of launch({ ...launchOptions(cwd, 'retained'), conversation: retained })) { /* drain */ }
+      expect(completed).toEqual(['thread_fixture']);
+      const resumed: CodexNativeEvent[] = [];
+      for await (const event of launch({ ...launchOptions(cwd), conversation: { ...retained, resumeId: completed[0]! } })) resumed.push(event);
+      expect(resumed.filter(event => event.type === 'agent_message')).toHaveLength(1);
+      expect(JSON.stringify(resumed)).not.toContain('old output');
+      expect(completed).toEqual(['thread_fixture', 'thread_fixture']);
+    });
+  });
+
+  it.each(['missing', 'wrong-thread', 'wrong-permissions'] as const)('does not start a turn on %s', async mode => {
+    await withCli(async (binary, cwd) => {
+      const drain = async () => {
+        for await (const _ of codexSessionLaunch(binary)({ ...launchOptions(cwd, mode),
+          conversation: { mode: 'retained', resumeId: 'thread_fixture', verifyLaunch: async () => true,
+            verifyAccount: async () => true, protectedHistoryRoots: [cwd + '-history'],
+            completed() { throw new Error('Unexpected completion'); } }
+        })) { /* drain */ }
+      };
+      const error = await drain().catch((error: unknown) => error);
+      if (mode === 'missing') expect(error).toMatchObject({ name: 'NativeResumeRefused', decision: 'missing', launched: true });
+      else expect(error).not.toMatchObject({ name: 'NativeResumeRefused' });
+      await expect(readFile(path.join(cwd, 'turn-started'))).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+  });
+
   it('uses version/initialize/account/thread/turn and retains notifications before the RPC reply', async () => {
     await withCli(async (binary, cwd) => {
       const events: CodexNativeEvent[] = [];

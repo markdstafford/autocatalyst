@@ -108,6 +108,8 @@ export interface SpecReviewSessionInput {
   readonly resultFile: string;
   readonly canonicalPath?: string;
   readonly previousMarkdown?: string;
+  readonly revision?: string;
+  readonly priorReview?: string;
   readonly candidateKey?: string;
   readonly feedback?: readonly {
     readonly feedbackId: string;
@@ -357,7 +359,8 @@ async function runSpecReview(
       const runRole = (role: Role, attempt: number, task: Omit<SpecReviewSessionInput, 'resultFile' | 'focus'>) => {
         progress.role = role;
         return options.dispatcher.runRole({
-          ...base, role, route: role === 'reviewer' ? routes.reviewerRoute : routes.implementerRoute,
+          ...base, role, reviewedOccurrence: { id: input.runStep.id, workflow: input.workflow,
+            ...(input.stillOwns ? { stillOwns: input.stillOwns } : {}) }, route: role === 'reviewer' ? routes.reviewerRoute : routes.implementerRoute,
           toolPolicyMode: 'read_only',
           specReview: { ...task, focus: focusByAltitude[altitude],
             resultFile: `spec-review-${digest(current.occurrenceId).slice(0, 12)}-${altitude}-${round}-${role}-${attempt}-${randomUUID()}.json`,
@@ -386,6 +389,7 @@ async function runSpecReview(
         });
         for (let attempt = 0; attempt < 2; attempt++) {
           const output = await runRole('implementer', attempt, {
+            ...(previousDraft !== undefined ? { revision: digest(previousDraft) } : {}),
             feedback, priorDispositions: Object.values(current.decisions),
             ...(authorAnswer ? { answer: authorAnswer } : {}),
             ...(canonicalPath ? { canonicalPath } : {}), ...(previousDraft ? { previousMarkdown: previousDraft } : {}),
@@ -421,7 +425,15 @@ async function runSpecReview(
 
       for (let attempt = 0; !current.intake && attempt < 2; attempt++) {
         const output = await runRole('reviewer', attempt, {
-          candidateKey: pending.key, canonicalPath: pending.path,
+          candidateKey: pending.key, canonicalPath: pending.path, revision: pending.digest,
+          priorReview: JSON.stringify({
+            lastReviewedRevision: current.last?.digest ?? null,
+            earlierFindings: Object.keys(current.evidence).flatMap(id => {
+              const item = items.get(id);
+              return item ? [{ id, title: item.title, body: item.body, status: item.status }] : [];
+            }),
+            dispositions: [...Object.values(current.decisions), ...pending.dispositions]
+          }),
           ...(attempt ? { correction: 'Return a valid verdict with scoped findings. Never supply anchors.' } : {})
         });
         if (output.workResult.directive === 'needs_input') return pause('reviewer', output.workResult.question, output.sessionId);
