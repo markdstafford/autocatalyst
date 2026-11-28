@@ -1,20 +1,28 @@
 /** The shell banner: a title row, followed by the collection strip on run routes. */
 import type { ReactNode } from 'react';
-import { useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 
-import { headerContentForPath, isRunsPath, type ProjectBreadcrumb } from './navigation.js';
+import { Button } from '../ui/button.js';
+import { Tooltip } from '../ui/tooltip.js';
+import { getAction } from './action-registry.js';
+import { headerContentForPath, isArchivedRunsSearch, isRunsPath, RUNS_PATH, type ProjectBreadcrumb } from './navigation.js';
 
 interface HeaderProps {
   readonly viewTitle: string;
   readonly project?: ProjectBreadcrumb | undefined;
   readonly viewSettings?: ReactNode;
   readonly chips?: ReactNode;
+  showArchived?(): void;
 }
 
-export function Header({ viewTitle, project, viewSettings, chips }: HeaderProps): ReactNode {
-  const { pathname } = useLocation();
-  const { breadcrumb, title } = headerContentForPath(pathname, viewTitle, project);
+export function Header({ viewTitle, project, viewSettings, chips, showArchived }: HeaderProps): ReactNode {
+  const { pathname, search } = useLocation();
   const runs = isRunsPath(pathname);
+  const archivedOnly = runs && isArchivedRunsSearch(search);
+  const { breadcrumb, title } = archivedOnly
+    ? { breadcrumb: 'Runs', title: 'Archived runs' }
+    : headerContentForPath(pathname, viewTitle, project);
+  const archiveAction = getAction('show-archived-runs');
 
   return (
     <header className="min-w-0 shrink-0 border-b border-border">
@@ -22,15 +30,22 @@ export function Header({ viewTitle, project, viewSettings, chips }: HeaderProps)
         <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
           {breadcrumb !== undefined ? (
             <>
-              <span className="max-w-[45%] truncate text-sm text-subtext">{breadcrumb}</span>
+              {archivedOnly
+                ? <Link to={RUNS_PATH} className="text-sm text-subtext hover:text-text">Runs</Link>
+                : <span className="max-w-[45%] truncate text-sm text-subtext">{breadcrumb}</span>}
               <span className="text-sm text-subtext" aria-hidden>/</span>
             </>
           ) : null}
           <h1 className="truncate text-md font-medium text-text">{title}</h1>
         </div>
-        {runs ? viewSettings : null}
+        {runs && !archivedOnly && showArchived !== undefined ? (
+          <Tooltip label={archiveAction.tooltip ?? archiveAction.name}>
+            <Button size="control-sm" variant="secondary" onClick={showArchived}>{archiveAction.name}</Button>
+          </Tooltip>
+        ) : null}
+        {runs && !archivedOnly ? viewSettings : null}
       </div>
-      {runs ? chips : null}
+      {runs && !archivedOnly ? chips : null}
     </header>
   );
 }

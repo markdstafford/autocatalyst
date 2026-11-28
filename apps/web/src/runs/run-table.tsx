@@ -4,7 +4,8 @@
  * It renders the loaded run array in server order (newest first) with a sticky
  * column header, one focusable row per run, and the selected row as the list's one
  * roving tab stop (`tabIndex=0`; every other row is `-1`). Exactly one row carries
- * `aria-selected="true"` whenever rows exist. Clicking a row or pressing Enter on a
+ * `aria-selected="true"` whenever rows exist. Each row also has a focusable action button.
+ * Clicking a row or pressing Enter on a
  * focused row selects it; `j`/`k`/arrow movement is owned by the action registry at
  * the shell scope and flows in through `selectedRunId` changes.
  *
@@ -39,6 +40,7 @@ export interface RunTableProps {
   select(runId: string): void;
   /** Request the next page (end sentinel intersection). */
   loadNextPage(): void;
+  renderActions?(run: Run, title: string): ReactNode;
 }
 
 const COLUMNS = ['Title', 'Work kind', 'Status', 'Project', 'Age'] as const;
@@ -62,7 +64,8 @@ export function RunTable({
   hasNextPage,
   isPaging,
   select,
-  loadNextPage
+  loadNextPage,
+  renderActions
 }: RunTableProps): ReactNode {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -79,8 +82,10 @@ export function RunTable({
     if (container === null || !isFocusInRunList()) {
       return;
     }
-    const row = container.querySelector<HTMLElement>(`[data-run-id="${CSS.escape(selectedRunId)}"]`);
-    if (row !== null && row !== document.activeElement) {
+    const row = [...container.querySelectorAll<HTMLElement>('[data-run-id]')].find(
+      element => element.dataset['runId'] === selectedRunId
+    );
+    if (row !== undefined && !row.contains(document.activeElement)) {
       row.focus();
     }
   }, [selectedRunId]);
@@ -146,13 +151,15 @@ export function RunTable({
             data-testid={`run-row-${run.id}`}
             aria-selected={selected}
             tabIndex={selected ? 0 : -1}
-            onClick={() => {
+            onClick={(event) => {
+              const target = event.target;
+              if (!(target instanceof Element) || !event.currentTarget.contains(target) || target.closest('button')) return;
               select(run.id);
             }}
             onKeyDown={(event) => {
-              onRowKeyDown(event, run.id);
+              if (event.target === event.currentTarget) onRowKeyDown(event, run.id);
             }}
-            className={`grid h-row-regular shrink-0 cursor-pointer border-b border-border-faint focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus ${
+            className={`group grid h-row-regular shrink-0 cursor-pointer border-b border-border-faint focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus ${
               selected ? 'bg-surface text-text' : 'hover:bg-hover-row'
             }`}
             style={GRID_STYLE}
@@ -160,12 +167,14 @@ export function RunTable({
             <div role="gridcell" data-testid={`run-cell-title-${run.id}`} className={`${BODY_CELL} gap-2`}>
               <span className="truncate text-md text-text">{title.title}</span>
               <span className="shrink-0 text-subtext">{title.number}</span>
+              {renderActions === undefined ? null : <div className="ml-auto shrink-0">{renderActions(run, title.title)}</div>}
             </div>
             <div role="gridcell" className={BODY_CELL}>
               <Chip tone="neutral">{run.workKind}</Chip>
             </div>
-            <div role="gridcell" className={BODY_CELL}>
+            <div role="gridcell" className={`${BODY_CELL} gap-1.5`}>
               {run.status !== undefined ? <StatusChip run={run} /> : CELL_DASH}
+              {run.archivedAt === undefined ? null : <span className="text-xs">Archived</span>}
             </div>
             <div role="gridcell" className={BODY_CELL}>
               <span className="truncate">{projectName}</span>

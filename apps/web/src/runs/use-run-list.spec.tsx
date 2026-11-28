@@ -361,6 +361,34 @@ describe('useRunList paging', () => {
 });
 
 describe('useRunList scope', () => {
+  it('paginates and polls the archive in server order, ignoring project and view projection', async () => {
+    vi.useFakeTimers();
+    const archive = (id: string, projectId: string) => ({
+      ...makeRun({ id, projectId, status: 'done' }), archivedAt: '2026-01-02T00:00:00.000Z'
+    });
+    const listRuns = vi.fn<ControlPlaneClient['listRuns']>().mockImplementation(async args =>
+      args?.cursor === 'tail' ? { runs: [archive('a', 'other-project')] } :
+        { runs: [archive('z', 'project-1')], nextCursor: 'tail' });
+    const projectRows = vi.spyOn(viewList, 'projectRunViewRows');
+    const props = { ...defaults(), client: { listRuns }, connected: true, archivedOnly: true, projectId: 'project-1',
+      pollIntervalMs: 1000 };
+    const view = render(<Harness {...props} routeRunId={undefined} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { screen.getByTestId('load').click(); });
+    expect(screen.getByTestId('rows').textContent).toBe('z,a');
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(listRuns.mock.calls).toEqual([
+      [{ limit: 50, archived: 'only' }], [{ limit: 50, archived: 'only', cursor: 'tail' }],
+      [{ limit: 50, archived: 'only' }], [{ limit: 50, archived: 'only', cursor: 'tail' }]
+    ]);
+    expect(projectRows).not.toHaveBeenCalled();
+    view.unmount();
+
+    render(<Harness {...props} routeRunId="a" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByTestId('selected').textContent).toBe('a');
+  });
+
   it('rereads every loaded page with the active filter and drops an old in-flight page on scope change', async () => {
     vi.useFakeTimers();
     let finishOldPage!: (page: RunListResponse) => void;

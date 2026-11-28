@@ -3,8 +3,8 @@
  * `replaceRun` live-update path.
  *
  * For a given run id, the row with the later `updatedAt` wins. When two rows carry the
- * same `updatedAt`, the existing row is kept, so an older in-flight poll response that
- * reports the same timestamp cannot revert fields a transition refresh already applied.
+ * same `updatedAt`, keep the lifecycle projection but reconcile topic title and archive
+ * metadata. The list/detail hooks fence reads that started before a mutation.
  * Pure and React-free so both call sites agree and the rule is unit-tested in isolation.
  */
 import type { Run } from '@autocatalyst/api-contract';
@@ -31,6 +31,23 @@ export function isStrictlyNewer(incoming: Run, existing: Run): boolean {
   return incomingMs > existingMs;
 }
 
+export function withRunMetadata(
+  run: Run, metadata: { readonly title?: string | undefined; readonly archivedAt?: string | undefined }
+): Run {
+  if (run.title === metadata.title && run.archivedAt === metadata.archivedAt) return run;
+  const { title: _title, archivedAt: _archivedAt, ...base } = run;
+  return {
+    ...base,
+    ...(metadata.title === undefined ? {} : { title: metadata.title }),
+    ...(metadata.archivedAt === undefined ? {} : { archivedAt: metadata.archivedAt })
+  };
+}
+
+function freshestRun(existing: Run, incoming: Run): Run {
+  if (isStrictlyNewer(incoming, existing)) return incoming;
+  return incoming.updatedAt === existing.updatedAt ? withRunMetadata(existing, incoming) : existing;
+}
+
 /**
  * Merge an incoming ordered row list over the existing rows. The result follows the
  * incoming order (the server's authoritative ordering), but for each id keeps whichever
@@ -47,7 +64,7 @@ export function mergeRunRows(existing: readonly Run[], incoming: readonly Run[])
     if (existingRun === undefined) {
       return incomingRun;
     }
-    return isStrictlyNewer(incomingRun, existingRun) ? incomingRun : existingRun;
+    return freshestRun(existingRun, incomingRun);
   });
 }
 
@@ -62,11 +79,11 @@ export function replaceRunInRows(rows: readonly Run[], run: Run): readonly Run[]
     if (existing.id !== run.id) {
       return existing;
     }
-    if (isStrictlyNewer(run, existing)) {
+    const fresh = freshestRun(existing, run);
+    if (fresh !== existing) {
       changed = true;
-      return run;
     }
-    return existing;
+    return fresh;
   });
   // Return the original reference when nothing changed so React can bail out of the
   // state update.

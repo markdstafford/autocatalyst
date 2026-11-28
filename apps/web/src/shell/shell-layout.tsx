@@ -38,7 +38,8 @@ import { useTheme } from '../theme/theme-provider.js';
 import { ConnectionStateProvider, useConnectionState } from './connection-state.js';
 import { Footer } from './footer.js';
 import { Header } from './header.js';
-import { CONNECTION_PATH, RUNS_PATH, isRunsPath, isSettingsPath, projectIdFromSearch } from './navigation.js';
+import { actionApplies, getAction } from './action-registry.js';
+import { ARCHIVED_RUNS_PATH, CONNECTION_PATH, RUNS_PATH, isArchivedRunsSearch, isRunsPath, isSettingsPath, projectIdFromSearch } from './navigation.js';
 import { ShortcutsOverlay } from './shortcuts-overlay.js';
 import { Sidebar, type SidebarMode } from './sidebar.js';
 import { RunViewChips, RunViewDialog, RunViewSettings, useRunViewControls } from './run-view-controls.js';
@@ -52,6 +53,7 @@ export interface RunsOutletContext {
   readonly activeView: RunView;
   /** Whether the side detail pane is shown. */
   readonly detailPaneVisible: boolean;
+  revealDetailPane(): void;
   /** Current side-pane width in px. */
   readonly sidePaneWidthPx: number;
   /** Persist a new pane width, clamped to the design-system range and the main area. */
@@ -85,8 +87,10 @@ function ShellLayoutInner({ views }: { readonly views: RunViewsState }): ReactNo
   const navigate = useNavigate();
   const settings = isSettingsPath(location.pathname);
   const paneEnabled = isRunsPath(location.pathname);
-  const viewControls = useRunViewControls(views, paneEnabled);
-  const activeProjectId = paneEnabled ? projectIdFromSearch(location.search) : undefined;
+  const archivedOnly = paneEnabled && isArchivedRunsSearch(location.search);
+  const showViews = paneEnabled && !archivedOnly;
+  const viewControls = useRunViewControls(views, showViews);
+  const activeProjectId = showViews ? projectIdFromSearch(location.search) : undefined;
   const projectName = projects.find((project) => project.id === activeProjectId)?.displayName;
   // The pane only renders once a run list exists, i.e. with a stored token. Without
   // one the runs route shows the connect prompt, so the footer's detail-pane zone must
@@ -175,6 +179,14 @@ function ShellLayoutInner({ views }: { readonly views: RunViewsState }): ReactNo
     const target = views.views[position + delta];
     if (target !== undefined) views.commands.activate(target.id);
   };
+  const showArchived = (): void => {
+    if (actionApplies(getAction('show-archived-runs'), { route: paneEnabled ? 'runs' : 'other', archivedOnly, startRunOpen })) {
+      viewControls.close();
+      navigate(ARCHIVED_RUNS_PATH);
+      main.current?.focus();
+    }
+  };
+
   useActionKeys({
     'sidebar-toggle': () => setSidebarOpen(!sidebarOpen),
     'settings-toggle': () => {
@@ -191,6 +203,7 @@ function ShellLayoutInner({ views }: { readonly views: RunViewsState }): ReactNo
     },
     'pane-toggle': togglePane,
     'open-shortcuts': () => setShortcutsOpen(true),
+    'show-archived-runs': showArchived,
     'create-view': () => viewControls.open('create'),
     'rename-view': () => viewControls.open('rename', views.activeView),
     'delete-view': () => viewControls.open('delete', views.activeView),
@@ -201,6 +214,7 @@ function ShellLayoutInner({ views }: { readonly views: RunViewsState }): ReactNo
       route: settings ? 'settings' : paneEnabled ? 'runs' : 'other',
       viewPosition: views.views.length === 1 ? 'singleton' : position === 0 ? 'first' : position === views.views.length - 1 ? 'last' : 'middle',
       shortcutsOpen,
+      archivedOnly,
       startRunOpen,
       hoverSidebarOpen: hoverOpen,
       settingsCheckPending: connectionState.isSettingsCheckPending()
@@ -219,6 +233,7 @@ function ShellLayoutInner({ views }: { readonly views: RunViewsState }): ReactNo
   const outletContext: RunsOutletContext = {
     activeView: views.activeView,
     detailPaneVisible: preferences.detailPaneVisible,
+    revealDetailPane: () => updatePreferences({ detailPaneVisible: true }),
     sidePaneWidthPx: preferences.sidePaneWidthPx,
     setPaneWidth,
     startRunOpen,
@@ -252,8 +267,9 @@ function ShellLayoutInner({ views }: { readonly views: RunViewsState }): ReactNo
                 name: projectName,
                 phase: hasBearerToken() ? projectPhase : 'error'
               }}
-              viewSettings={paneEnabled ? <RunViewSettings view={views.activeView} controls={viewControls} /> : null}
-              chips={paneEnabled ? <RunViewChips views={views} controls={viewControls} /> : null}
+              showArchived={showArchived}
+              viewSettings={showViews ? <RunViewSettings view={views.activeView} controls={viewControls} /> : null}
+              chips={showViews ? <RunViewChips views={views} controls={viewControls} /> : null}
             />
             <main ref={main} tabIndex={-1} className="min-h-0 flex-1 overflow-hidden bg-background focus:outline-none">
               <Outlet context={outletContext} />
@@ -323,7 +339,7 @@ function ShellLayoutInner({ views }: { readonly views: RunViewsState }): ReactNo
               receiveCreatedRun.current?.(run);
             });
           }} />
-        <RunViewDialog controls={viewControls} onRunRoute={paneEnabled} />
+        <RunViewDialog controls={viewControls} onRunRoute={showViews} />
         <ShortcutsOverlay open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       </div>
     </>

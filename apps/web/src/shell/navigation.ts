@@ -4,6 +4,11 @@
  * Keep project scopes in the search string, independent of the selected run path.
  */
 export const RUNS_PATH = '/runs';
+export const ARCHIVED_RUNS_PATH = `${RUNS_PATH}?archived=only`;
+
+export function isArchivedRunsSearch(search: string): boolean {
+  return new URLSearchParams(search).get('archived') === 'only';
+}
 export const SETTINGS_PATH = '/settings';
 export const CONNECTION_PATH = '/settings/connection';
 export const PROJECTS_PATH = '/settings/projects';

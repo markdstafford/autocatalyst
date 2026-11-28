@@ -11,7 +11,7 @@ export interface MenuItem {
   readonly label: string;
   readonly keys?: readonly Binding[];
   readonly disabledReason?: string | undefined;
-  /** Skip menu focus restoration when a dialog takes ownership of focus. */
+  /** Skip menu focus restoration when another surface takes ownership of focus. */
   readonly opensDialog?: boolean;
   onSelect(trigger: HTMLElement): void;
 }
@@ -22,12 +22,13 @@ interface MenuProps {
   readonly triggerTooltip?: string;
   readonly context?: boolean;
   readonly items: readonly MenuItem[];
+  onOpenChange?(open: boolean): void;
 }
 
 const POPUP_CLASSES = 'z-50 min-w-40 rounded-sm border border-border bg-mantle p-1 shadow-popover outline-none';
 const ITEM_CLASSES = 'relative flex h-control-sm cursor-default items-center justify-between gap-4 rounded-sm px-2 text-sm text-text outline-none data-highlighted:bg-surface aria-disabled:text-subtext';
 
-export function Menu({ label, trigger, triggerTooltip, context = false, items }: MenuProps): ReactNode {
+export function Menu({ label, trigger, triggerTooltip, context = false, items, onOpenChange }: MenuProps): ReactNode {
   const opener = useRef<HTMLElement>(null);
   const rememberOpener = useCallback((element: HTMLElement | null): void => {
     opener.current = element;
@@ -56,12 +57,13 @@ export function Menu({ label, trigger, triggerTooltip, context = false, items }:
       </Positioner>
     </BaseMenu.Portal>
   );
-  const onOpenChange = (open: boolean): void => {
+  const handleOpenChange = (open: boolean): void => {
     if (open) handingOffFocus.current = false;
+    onOpenChange?.(open);
   };
   if (context) {
     return (
-      <ContextMenu.Root onOpenChange={onOpenChange}>
+      <ContextMenu.Root onOpenChange={handleOpenChange}>
         <ContextMenu.Trigger
           render={trigger}
           ref={rememberOpener}
@@ -84,7 +86,7 @@ export function Menu({ label, trigger, triggerTooltip, context = false, items }:
   }
   const button = <BaseMenu.Trigger render={trigger} ref={rememberOpener} />;
   return (
-    <BaseMenu.Root onOpenChange={onOpenChange}>
+    <BaseMenu.Root onOpenChange={handleOpenChange}>
       {triggerTooltip === undefined ? button : <Tooltip label={triggerTooltip}>{button}</Tooltip>}
       {popup}
     </BaseMenu.Root>

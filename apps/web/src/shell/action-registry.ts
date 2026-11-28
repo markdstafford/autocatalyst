@@ -33,7 +33,11 @@ import {
   type ShellKeyEvent
 } from './key-utils.js';
 
+export type RunActionId = 'recover-run' | 'cancel-run' | 'archive-run' | 'unarchive-run' | 'rename-run' | 'set-run-step';
+
 export type ActionId =
+  | RunActionId
+  | 'show-archived-runs'
   | 'sidebar-toggle'
   | 'pane-toggle'
   | 'settings-toggle'
@@ -61,14 +65,37 @@ export interface ActionDescriptor {
   /** Every binding that triggers the action; each binding is an alternate. */
   readonly keys: readonly Binding[];
   readonly appliesWhen: AppliesWhen;
+  readonly tooltip?: string;
   /** Additional live eligibility shared by dispatch and the conflict suite. */
   when?(ctx: ActionContext): boolean;
 }
 
-const namedView = (ctx: ActionContext): boolean => ctx.route === 'runs' && ctx.viewPosition !== undefined;
+const namedView = (ctx: ActionContext): boolean =>
+  ctx.route === 'runs' && ctx.archivedOnly !== true && ctx.viewPosition !== undefined;
 const specReady = (ctx: ActionContext): boolean =>
   ctx.run !== undefined && ctx.detailTab === 'spec' && ctx.specReady === true;
 const shellAvailable = (ctx: ActionContext): boolean => ctx.startRunOpen !== true;
+
+type RunActionDescriptor = ActionDescriptor & { readonly id: RunActionId; readonly takesFocus?: boolean };
+
+const finished = (run: Run): boolean => run.status === 'done' || run.status === 'failed' || run.status === 'canceled';
+const runAction = (
+  id: RunActionId, name: string, key: ShellChord, applies: (run: Run, ctx: ActionContext) => boolean,
+  takesFocus = false
+): RunActionDescriptor => ({
+  id, name, keys: [[key]], tooltip: name, appliesWhen: 'no-text-entry', takesFocus,
+  when: (ctx) => shellAvailable(ctx) && ctx.runActionsBusy !== true && ctx.run !== undefined && applies(ctx.run, ctx)
+});
+
+export const RUN_ACTIONS: readonly RunActionDescriptor[] = [
+  runAction('recover-run', 'Recover', { key: 'R', shift: true }, run => run.status === 'failed' && run.archivedAt === undefined),
+  runAction('cancel-run', 'Cancel', { key: 'X', shift: true }, run => run.status === 'in_progress', true),
+  runAction('archive-run', 'Archive', { key: 'e' }, run => finished(run) && run.archivedAt === undefined),
+  runAction('unarchive-run', 'Unarchive', { key: 'E', shift: true }, run => run.archivedAt !== undefined),
+  runAction('rename-run', 'Rename', { key: 'n' }, () => true, true),
+  runAction('set-run-step', 'Set step', { key: 's' },
+    (run, ctx) => run.status === 'in_progress' && ctx.hasStepCandidates === true, true)
+];
 
 /** Overlay display order. Controls derive key hints from their action's bindings. */
 export const ACTIONS: readonly ActionDescriptor[] = [
@@ -102,7 +129,11 @@ export const ACTIONS: readonly ActionDescriptor[] = [
     when: (ctx) => specReady(ctx) && ctx.canSelectPreviousComment === true },
   { id: 'next-comment', name: 'Next comment', keys: [[{ key: 'c' }]], appliesWhen: 'no-text-entry',
     when: (ctx) => specReady(ctx) && ctx.canSelectNextComment === true },
-  { id: 'expand-spec', name: 'Expand spec', keys: [[{ key: 'x' }]], appliesWhen: 'no-text-entry', when: specReady }
+  { id: 'expand-spec', name: 'Expand spec', keys: [[{ key: 'x' }]], appliesWhen: 'no-text-entry', when: specReady },
+  ...RUN_ACTIONS,
+  { id: 'show-archived-runs', name: 'Show archived runs', tooltip: 'Open Archived runs',
+    keys: [[{ key: 'A', shift: true }]], appliesWhen: 'no-text-entry',
+    when: (ctx) => shellAvailable(ctx) && ctx.route === 'runs' && ctx.archivedOnly !== true }
 ];
 
 /** Look up an action by id. Throws on an unknown id (a programming error). */
@@ -136,6 +167,9 @@ export interface ActionState {
   readonly canSelectNext?: boolean;
   readonly canSelectPrevious?: boolean;
   readonly run?: Run;
+  readonly hasStepCandidates?: boolean;
+  readonly runActionsBusy?: boolean;
+  readonly archivedOnly?: boolean;
   readonly detailTab?: RunDetailTabId;
   readonly specReady?: boolean;
   readonly canResolveComment?: boolean;
@@ -152,6 +186,13 @@ export interface ActionContext extends ActionState {
   readonly overlayLayerOpen: boolean;
   /** Focus is inside the run list (gates `list-focus` actions). */
   readonly listFocused: boolean;
+}
+
+/** Business eligibility for an explicit target; menu activation owns its own layer. */
+export function actionApplies(action: ActionDescriptor, state: ActionState): boolean {
+  return action.when?.({
+    ...state, isMac: false, textEntry: false, overlayLayerOpen: false, listFocused: false
+  }) ?? true;
 }
 
 /** Whether an action is eligible to match at all, given the live context. */

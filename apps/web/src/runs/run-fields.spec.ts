@@ -11,6 +11,11 @@ import { CELL_DASH, formatAge, rowTitle } from './run-fields.js';
 import { makeRun } from './run-fixtures.js';
 
 describe('rowTitle', () => {
+  it('prefers a run title without changing the issue identifier', () => {
+    const t = rowTitle({ ...makeRun({ issueNumber: 42, issueTitle: 'Do the thing' }), title: 'Renamed run' });
+    expect(t).toEqual({ title: 'Renamed run', number: '#42', hasIssue: true });
+  });
+
   it('uses the tracked issue title and number when present', () => {
     const t = rowTitle(makeRun({ issueNumber: 42, issueTitle: 'Do the thing' }));
     expect(t).toEqual({ title: 'Do the thing', number: '#42', hasIssue: true });

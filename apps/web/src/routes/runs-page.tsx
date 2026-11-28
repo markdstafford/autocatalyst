@@ -21,14 +21,16 @@ import { hasBearerToken } from '../auth/token-store.js';
 import { useControlPlaneConnection } from '../client/client-provider.js';
 import { useProjectDirectory } from '../projects/project-directory.js';
 import { ProjectEmptyState } from '../projects/project-empty-state.js';
+import { RunActionDialogs, RunActionOutcomeLine, RunActionsMenu, RunTitleEditor } from '../runs/run-action-surfaces.js';
 import { RunDetailPane } from '../runs/run-detail-pane.js';
 import { buildProjectNameMap, referencedProjectIds } from '../runs/run-list-projects.js';
 import { RunTable } from '../runs/run-table.js';
 import { useCurrentPrincipal } from '../runs/use-current-principal.js';
 import { useRunDetail } from '../runs/use-run-detail.js';
+import { useRunActions } from '../runs/use-run-actions.js';
 import { useRunList } from '../runs/use-run-list.js';
 import { useConnectionState } from '../shell/connection-state.js';
-import { CONNECTION_PATH, RUNS_PATH, projectIdFromSearch, projectRunsPath, runPath } from '../shell/navigation.js';
+import { CONNECTION_PATH, RUNS_PATH, isArchivedRunsSearch, projectIdFromSearch, projectRunsPath, runPath } from '../shell/navigation.js';
 import { useActionKeys } from '../shell/use-action-keys.js';
 import type { RunsOutletContext } from '../shell/shell-layout.js';
 import { PANE_WIDTH_MAX, PANE_WIDTH_MIN } from '../theme/preferences.js';
@@ -39,14 +41,15 @@ import { ResizeHandle } from '../ui/resize-handle.js';
 export function RunsPage(): ReactNode {
   const navigate = useNavigate();
   const location = useLocation();
-  const projectId = projectIdFromSearch(location.search);
+  const archivedOnly = isArchivedRunsSearch(location.search);
+  const projectId = archivedOnly ? undefined : projectIdFromSearch(location.search);
   const { runId: routeRunId } = useParams();
   const connected = hasBearerToken();
   const { client, authorization, reportListUnauthorized } = useControlPlaneConnection();
   const canRead = connected && authorization !== 'unauthorized';
   const currentPrincipal = useCurrentPrincipal(client, canRead);
   const { setListLost } = useConnectionState();
-  const { detailPaneVisible, sidePaneWidthPx, setPaneWidth, startRunOpen, openStartRun, receiveCreatedRun, activeView } = useOutletContext<RunsOutletContext>();
+  const { detailPaneVisible, revealDetailPane, sidePaneWidthPx, setPaneWidth, startRunOpen, openStartRun, receiveCreatedRun, activeView } = useOutletContext<RunsOutletContext>();
   const mainRef = useRef<HTMLDivElement | null>(null);
   const [handoff, setHandoff] = useState<{
     readonly run: Run;
@@ -72,6 +75,7 @@ export function RunsPage(): ReactNode {
     ...(createdRun !== undefined ? { createdRun } : {}),
     activeView,
     projectId,
+    archivedOnly,
     onUnauthorized: () => reportListUnauthorized(client)
   });
 
@@ -110,7 +114,14 @@ export function RunsPage(): ReactNode {
     principalId: currentPrincipal?.id,
     authorized: canRead,
     replaceRun: state.replaceRun,
+    readScope: state.actionScope,
+    getRunReadVersion: state.getRunReadVersion,
     onUnauthorized: () => { if (!startRunOpen) navigate(CONNECTION_PATH); }
+  });
+  const actions = useRunActions({
+    client, list: state, selectedRun, selectedSteps: detail.actionSteps, startRunOpen,
+    revealPane: revealDetailPane, refreshDetail: detail.reloadSpec,
+    fallbackFocus: () => mainRef.current?.querySelector<HTMLElement>('[data-run-id][aria-selected="true"]') ?? mainRef.current
   });
 
   // The run list owns the selection keys. The registry gates `j`/`k`/arrows on focus
@@ -162,13 +173,17 @@ export function RunsPage(): ReactNode {
   }
 
   const hasRows = state.rows.length > 0;
-  if (!hasRows && projectsPhase === 'ready' && projects.length === 0 && state.phase === 'ready') {
+  if (!archivedOnly && !hasRows && projectsPhase === 'ready' && projects.length === 0 &&
+    state.phase === 'ready' && actions.outcome === undefined) {
     return <ProjectEmptyState fromRuns />;
   }
+  const hasPaneHeader = detailPaneVisible && selectedRun !== undefined && !detail.runGone;
+  const outcome = <RunActionOutcomeLine outcome={actions.outcome} undo={actions.undo} />;
 
   return (
-    <div ref={mainRef} className="flex h-full min-w-0">
+    <div ref={mainRef} tabIndex={-1} className="flex h-full min-w-0 focus:outline-none">
       <div className="flex min-w-0 flex-1 flex-col">
+        {!hasPaneHeader && actions.outcome !== undefined ? <div className="shrink-0 px-3">{outcome}</div> : null}
         {renderListRegion()}
       </div>
 
@@ -187,11 +202,18 @@ export function RunsPage(): ReactNode {
             <RunDetailPane
               run={selectedRun}
               detail={detail}
+              runActions={selectedRun === undefined ? null : <RunActionsMenu run={selectedRun} actions={actions} />}
+              actionOutcome={hasPaneHeader ? outcome : null}
+              titleEditor={actions.editor === undefined ? null : (
+                <RunTitleEditor {...actions.editor} pending={actions.pending} dismiss={actions.dismiss} submit={actions.submit} />
+              )}
+              {...(selectedRun === undefined ? {} : { onRename: (opener: HTMLElement) => actions.rename(selectedRun, opener) })}
               {...(currentPrincipal !== undefined ? { currentPrincipalId: currentPrincipal.id, currentPrincipalIsHuman: currentPrincipal.kind === 'human' } : {})}
             />
           </div>
         </>
       ) : null}
+      <RunActionDialogs actions={actions} />
     </div>
   );
 
@@ -207,10 +229,11 @@ export function RunsPage(): ReactNode {
           isPaging={state.isPaging}
           select={state.select}
           loadNextPage={state.loadNextPage}
+          renderActions={(run, title) => <RunActionsMenu run={run} rowTitle={title} actions={actions} />}
         />
       );
     }
-    if (state.phase !== 'error' && (state.phase === 'loading' || projectsPhase === 'loading')) {
+    if (state.phase !== 'error' && (state.phase === 'loading' || (!archivedOnly && projectsPhase === 'loading'))) {
       return (
         <div
           data-testid="runs-loading"
@@ -231,6 +254,7 @@ export function RunsPage(): ReactNode {
         </div>
       );
     }
+    if (archivedOnly) return <EmptyState title="Archived runs appear here." />;
     if (projectsPhase === 'error') {
       return (
         <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">

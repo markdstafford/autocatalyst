@@ -210,6 +210,9 @@ The title row is one line: the breadcrumb (when there is one), then the title, o
 breadcrumb is `--text-sm` in `--color-subtext`, separated by `/`. The title is `--text-md`, weight 500,
 truncating. Page controls sit at the right end of the row, such as the view settings button for run views.
 
+- Outside archive mode, the Runs title row shows the small secondary “Show archived runs” button before View settings (when present), with “Open Archived runs” on hover or keyboard focus.
+- The archive header reads “Runs / Archived runs”; Runs links back to the default collection, and there are no view chips or View settings.
+
 ### Alignment
 
 Region edges and text baselines line up across the shell. The rules hold with the sidebar open or closed,
@@ -292,6 +295,7 @@ horizontal padding, max width 12rem with truncation. Active is `--color-primary`
 - Hover is `--color-hover-row`. The selected row is `--color-surface` with `aria-selected="true"`, and it
   is the only row with that state. Rows are focusable, and `Enter` selects.
 - A row's "..." action button is hidden until the row is hovered or has focus inside it.
+- Archived rows append “Archived” after the status chip without replacing it.
 - The project column shows until a view can choose its properties, and is off by default after that.
 
 **Group headers.** A group header spans the row width, is 28 px high, `--color-mantle` fill, with a chevron,
@@ -306,7 +310,7 @@ The pane is `--color-background`, fills the main area below the header, and has 
 
 **Pane bar.** The pane's top row is `--height-pane-bar` high with 12 px horizontal padding and a
 `--color-border` line below. It holds, in order: in full page, a "Back to list" button; previous and next run
-buttons; the position ("m of n", `--text-xs`, `tabular-nums`, `--color-subtext`); a flexible gap; full screen
+buttons; the position ("m of n", `--text-xs`, `tabular-nums`, `--color-subtext`); a flexible gap; the icon-only “Run actions” menu; Expand
 (on the Spec and Acceptance tabs when the document is ready); and the decision button while the run waits at a
 gate.
 
@@ -319,6 +323,8 @@ content scrolls beneath the tab list. The header block and the tab content keep 
   issue exists, the work kind chip (a `--color-border` outline, `--text-xs`, `--color-text`, `--radius-sm`),
   and the shared status chip. The header status chip always matches the selected list row because both come
   from the one `runStateChip` mapping. The pane header shows no project name.
+- The pane meta line appends “Archived” after the unchanged status chip.
+- Show one action outcome under the pane header, or at the top of the collection when the header is absent; use status for success and alert for failure, with Undo beside “Archived”.
 - The tabs are, in order: Summary, Spec, Acceptance, Activity. A selected tab is `--color-text` with a
   2 px `--color-primary` underline. Others are `--color-subtext`, and `--color-text` on hover. Tab labels
   carry no counts. Every tab is present and enabled on every run.
@@ -493,6 +499,7 @@ has no illustration. Patterns:
 - No projects: "Add a project to get started" with an "Add project" button. With no connection set, the
   button opens Connection settings first.
 - No runs: says a run starts from a tracked issue and shows a "Start a run" button.
+- Empty archive: “Archived runs appear here.” with no button.
 - Missing work kind: show "Needs a work kind" and one line explaining why. Keep "Start run" disabled
   until the operator chooses a work kind.
 - A tab with nothing to show: says why, with no button. For a work kind without a spec, it explains that
@@ -594,6 +601,7 @@ handling, and tokens supply the styling.
 - Dialogs: `--color-background` fill, `--color-border` outline, `--radius-sm`, `--shadow-dialog`, and a
   `--color-crust` backing. A title (`--text-md`, weight 500), one short description, the body, then a
   right-aligned action row with Cancel left of the confirm action.
+- “Move the run back” shows a single-choice list of reached step IDs in `--font-mono`, then Cancel and Move back; Move back is disabled until a choice is made.
 - Tooltips are required on every icon-only button.
 - Primary buttons use `--color-primary` fill and `--color-on-primary` text. Secondary buttons use a
   `--color-border` outline with `--color-surface` hover. Destructive buttons use `--color-red` fill with
@@ -604,8 +612,8 @@ handling, and tokens supply the styling.
 
 - Every interactive element shows a `--color-focus` ring on `:focus-visible`, and none shows one on mouse
   focus. Inputs show it on focus.
-- Tab order follows the visual order: sidebar, header, list, pane, footer. The list is one tab stop, and the
-  arrow keys and `j` and `k` move the selection inside it.
+- Tab order follows the visual order: sidebar, header, list, pane, footer. Rows have one roving tab stop,
+  and the arrow keys and `j` and `k` move the selection. Row action buttons also accept Tab focus.
 - Every action is registered once with a name, a key, and a rule for when it applies. Menus, tooltips, and
   the shortcuts overlay read the registry.
 - A key shows beside its action: in a tooltip as "Label (key)", and at the right of a menu item as a key cap

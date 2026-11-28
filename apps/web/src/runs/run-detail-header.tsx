@@ -3,8 +3,8 @@
  *
  * Every run state uses the same structure so the pane header is predictable: a clamped
  * title over a meta line with the issue number as a link when a tracked issue exists, the
- * neutral work-kind chip, and the shared {@link StatusChip}. The title is the tracked issue
- * title when the run has one, otherwise the run id, and it is capped at two lines with the
+ * neutral work-kind chip, and the shared {@link StatusChip}. The display title uses the
+ * same projection as the table, and it is capped at two lines with the
  * full text kept in the `title` attribute so a long title does not grow the fixed header.
  * The issue number renders as an external link only when a tracked issue exists, opening in
  * a new tab with `rel="noopener noreferrer"`. The meta line never shows the project name.
@@ -15,25 +15,29 @@
 import type { Run } from '@autocatalyst/api-contract';
 import type { ReactNode } from 'react';
 
-import { rowTitle } from './run-fields.js';
+import { runDisplayTitle } from './run-fields.js';
 import { StatusChip } from './status-chip.js';
 import { Chip } from '../ui/chip.js';
 
 export interface RunDetailHeaderProps {
   readonly run: Run;
+  readonly editor?: ReactNode;
+  onRename?(opener: HTMLElement): void;
 }
 
-export function RunDetailHeader({ run }: RunDetailHeaderProps): ReactNode {
-  const title = rowTitle(run);
+const TITLE_CLASS = 'line-clamp-2 text-lg font-medium text-text';
+
+export function RunDetailHeader({ run, editor, onRename }: RunDetailHeaderProps): ReactNode {
+  const title = runDisplayTitle(run);
   return (
     <div className="flex flex-col gap-1">
-      <div
-        data-testid="pane-run-title"
-        title={title.title}
-        className="line-clamp-2 text-lg font-medium text-text"
-      >
-        {title.title}
-      </div>
+      {editor ?? (onRename === undefined ? (
+        <div data-testid="pane-run-title" title={title} className={TITLE_CLASS}>{title}</div>
+      ) : (
+        <button type="button" data-testid="pane-run-title" title={title}
+          className={`${TITLE_CLASS} self-start text-left hover:underline focus-visible:outline-focus`}
+          onClick={event => onRename(event.currentTarget)}>{title}</button>
+      ))}
       <div data-testid="pane-meta" className="flex flex-wrap items-center gap-2 text-sm text-subtext">
         {run.trackedIssue !== undefined ? (
           <a
@@ -50,6 +54,7 @@ export function RunDetailHeader({ run }: RunDetailHeaderProps): ReactNode {
           {run.workKind}
         </Chip>
         <StatusChip run={run} data-testid="pane-status" />
+        {run.archivedAt === undefined ? null : <span>Archived</span>}
       </div>
     </div>
   );
