@@ -1496,7 +1496,7 @@ describe('getRunTestingGuide', () => {
   it('uses the testing guide policy before any repository call', async () => {
     const findById = vi.fn(), findLatestByRun = vi.fn();
     const authorize = vi.fn().mockResolvedValue({ allowed: false });
-    const service = makeService({ runs: makeFakeRunRepo({ findById }), testingGuides: { findLatestByRun, create: vi.fn() },
+    const service = makeService({ runs: makeFakeRunRepo({ findById }), testingGuides: { findLatestByRun, findByRunAndRevision: vi.fn(), create: vi.fn() },
       policy: { authorize } });
     await expect(service.getRunTestingGuide(input)).rejects.toMatchObject({ code: 'forbidden' });
     expect(authorize).toHaveBeenCalledExactlyOnceWith({
@@ -1510,7 +1510,7 @@ describe('getRunTestingGuide', () => {
     'hides absent, missing and cross-tenant testing guides', async run => {
       const findLatestByRun = vi.fn().mockResolvedValue(null);
       const service = makeService({ runs: makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(run) }),
-        testingGuides: { findLatestByRun, create: vi.fn() } });
+        testingGuides: { findLatestByRun, findByRunAndRevision: vi.fn(), create: vi.fn() } });
       await expect(service.getRunTestingGuide(input)).rejects.toMatchObject({ code: 'not_found' });
       expect(findLatestByRun).toHaveBeenCalledTimes(run?.tenant === input.tenant ? 1 : 0);
     }
@@ -1522,8 +1522,42 @@ describe('getRunTestingGuide', () => {
     const findLatestByRun = vi.fn().mockResolvedValue({ ...guide, runStepId: 'private' });
     const workspace = makeFakeRunWorkspaceMetadataRepository();
     const service = makeService({ runs: makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(makeRun()) }),
-      testingGuides: { findLatestByRun, create: vi.fn() }, runWorkspaceMetadata: workspace });
+      testingGuides: { findLatestByRun, findByRunAndRevision: vi.fn(), create: vi.fn() }, runWorkspaceMetadata: workspace });
     await expect(service.getRunTestingGuide(input)).resolves.toEqual(guide);
     expect(workspace.findByRunId).not.toHaveBeenCalled();
+  });
+});
+
+describe('testing results authorization', () => {
+  const input = { principal, tenant: 'tenant_1', runId: 'run_1' };
+  const attempts = [
+    { action: 'run_testing_guide_results.read', kind: 'run_testing_guide_results', path: '/v1/runs/:id/testing-guide/results',
+      call: (service: DefaultControlPlaneService) => service.getTestingGuideResults(input) },
+    { action: 'run_testing_guide_results.write', kind: 'run_testing_guide_results', path: '/v1/runs/:id/testing-guide/results',
+      call: (service: DefaultControlPlaneService) => service.saveTestingGuideResults({ ...input, request: { guideRevision: 1, items: [] } }) },
+    { action: 'run_test_results.list', kind: 'run_test_results', path: '/v1/runs/:id/test-results',
+      call: (service: DefaultControlPlaneService) => service.listRunTestResults(input) }
+  ];
+
+  it.each(attempts)('authorizes $action before calling a repository', async ({ action, kind, path, call }) => {
+    const findById = vi.fn();
+    const authorize = vi.fn().mockResolvedValue({ allowed: false });
+    await expect(call(makeService({ runs: makeFakeRunRepo({ findById }), policy: { authorize } })))
+      .rejects.toMatchObject({ code: 'forbidden' });
+    expect(authorize).toHaveBeenCalledExactlyOnceWith({ principal, action, resource: { kind, id: input.runId, path } });
+    expect(findById).not.toHaveBeenCalled();
+  });
+
+  it.each([null, makeRun({ tenant: 'other' })])('hides missing and cross-tenant runs from all three operations', async run => {
+    const service = makeService({ runs: makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(run) }) });
+    for (const { call } of attempts) await expect(call(service)).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('does not let a model save a testing result', async () => {
+    const findById = vi.fn();
+    const service = makeService({ runs: makeFakeRunRepo({ findById }) });
+    await expect(service.saveTestingGuideResults({ ...input, principal: { ...principal, kind: 'model' },
+      request: { guideRevision: 1, items: [] } })).rejects.toMatchObject({ code: 'unauthorized' });
+    expect(findById).not.toHaveBeenCalled();
   });
 });

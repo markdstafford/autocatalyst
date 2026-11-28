@@ -61,15 +61,16 @@ describe('run feedback route contracts', () => {
       body: 'Body',
       anchor: { kind: 'artifact', artifactId: 'art_1' }
     });
-    expect(parsed.anchor).toBeDefined();
+    expect(parsed).toHaveProperty('anchor');
   });
 
-  it('rejects a non-artifact target', () => {
-    expect(() => createRunFeedbackRequestSchema.parse({
-      target: 'implementation',
-      title: 'Title',
-      body: 'Body'
-    })).toThrow();
+  it('accepts unanchored implementation feedback and rejects other targets or an implementation anchor', () => {
+    const request = { target: 'implementation', title: 'Title', body: 'Body' };
+    expect(createRunFeedbackRequestSchema.parse(request)).toEqual(request);
+    expect(createRunFeedbackRequestSchema.safeParse({ ...request, target: 'docs' }).success).toBe(false);
+    expect(createRunFeedbackRequestSchema.safeParse({
+      ...request, anchor: { kind: 'artifact', artifactId: 'art_1' }
+    }).success).toBe(false);
   });
 
   it('rejects empty title', () => {

@@ -60,11 +60,11 @@ export interface CreateGateFeedbackInput {
   readonly anchor?: FeedbackAnchor;
 }
 
-export async function createGateFeedback(
+export function buildGateFeedback(
   input: CreateGateFeedbackInput,
-  deps: FeedbackLifecycleDependencies
-): Promise<Feedback> {
-  const createInput: CreateFeedbackInput = {
+  deps: Pick<FeedbackLifecycleDependencies, 'ids' | 'clock'>
+): CreateFeedbackInput {
+  return {
     runId: input.runId,
     owner: input.owner,
     tenant: input.tenant,
@@ -75,7 +75,13 @@ export async function createGateFeedback(
     ...(input.anchor !== undefined ? { anchor: input.anchor } : {}),
     thread: [{ id: deps.ids(), author: input.principal, body: input.body, createdAt: deps.clock() }]
   };
-  return deps.feedback.create(createInput);
+}
+
+export async function createGateFeedback(
+  input: CreateGateFeedbackInput,
+  deps: FeedbackLifecycleDependencies
+): Promise<Feedback> {
+  return deps.feedback.create(buildGateFeedback(input, deps));
 }
 
 export interface CreateArtifactFeedbackInput {

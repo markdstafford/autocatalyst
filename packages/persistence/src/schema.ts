@@ -337,6 +337,10 @@ export const reviewedDispatchAttempts = sqliteTable('reviewed_dispatch_attempts'
 export const testResults = sqliteTable('test_results', {
   id: text('id').primaryKey(),
   runId: text('run_id').notNull().references(() => runs.id),
+  guideRevision: integer('guide_revision'),
+  gateStepId: text('gate_step_id').references(() => runSteps.id),
+  state: text('state', { enum: ['working', 'final'] }).notNull().default('final'),
+  itemsJson: text('items_json').notNull().default('[]'),
   testerJson: text('tester_json').notNull(),
   outcome: text('outcome').notNull(),
   evidenceJson: text('evidence_json'),
@@ -344,5 +348,11 @@ export const testResults = sqliteTable('test_results', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull()
 }, (table) => [
-  index('test_results_run_created_idx').on(table.runId, table.createdAt)
+  index('test_results_run_created_idx').on(table.runId, table.createdAt),
+  uniqueIndex('test_results_working_run_idx').on(table.runId).where(sql`${table.state} = 'working'`),
+  uniqueIndex('test_results_gate_step_idx').on(table.gateStepId).where(sql`${table.gateStepId} IS NOT NULL`),
+  check('test_results_state_check', sql`${table.state} IN ('working', 'final')`),
+  check('test_results_guide_revision_check', sql`${table.guideRevision} IS NULL OR (typeof(${table.guideRevision}) = 'integer' AND ${table.guideRevision} >= 1)`),
+  check('test_results_gate_binding_check', sql`(${table.guideRevision} IS NULL) = (${table.gateStepId} IS NULL)
+    AND (${table.state} = 'final' OR ${table.gateStepId} IS NOT NULL)`)
 ]);

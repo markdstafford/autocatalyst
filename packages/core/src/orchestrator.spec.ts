@@ -3650,7 +3650,7 @@ describe('testing guide dispatch', () => {
     const engine: ConvergenceEngine = { run: converge };
     const { orchestrator } = makeOrchestrator({
       runs, logger, convergenceEngine: engine, unitOfWork: { run: launch },
-      testingGuides: { create, findLatestByRun: async () => latest }
+      testingGuides: { create, findByRunAndRevision: vi.fn(), findLatestByRun: async () => latest }
     });
     const scope = { runId: active.id, tenant: active.tenant };
     return { orchestrator, transition, launch, create, converge, logger, scope, guideStep, read: () => active,

@@ -405,3 +405,7 @@ export * from './pr-ci-repair.js';
 export * from './pr-system-activity.js';
 
 export { assignTestingGuideItemIds, buildTestingGuidePrompt, type TestingGuidePromptInput } from './testing-guide.js';
+
+export { deriveTestResultOutcome, loadLatestFinalTestingPass, testingNotesForPass } from './testing-guide-results.js';
+export type { WriteTestingGuidePassInput, FinalizeTestingGuidePassInput, TestingGuidePassDecision } from './domain-repositories.js';
+export { TestingGuidePassConflictError } from './domain-repositories.js';

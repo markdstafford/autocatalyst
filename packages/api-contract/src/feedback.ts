@@ -53,12 +53,21 @@ export const runFeedbackPath = '/v1/runs/:id/feedback' as const;
 export const createRunFeedbackSuccessStatusCode = 201 as const;
 export const listRunFeedbackSuccessStatusCode = 200 as const;
 
-export const createRunFeedbackRequestSchema = z.object({
+const createArtifactFeedbackRequestSchema = z.object({
   target: z.literal('artifact'),
   title: z.string().min(1),
   body: z.string().min(1),
   anchor: feedbackAnchorSchema.optional()
 }).strict();
+
+export const createRunFeedbackRequestSchema = z.discriminatedUnion('target', [
+  createArtifactFeedbackRequestSchema,
+  z.object({
+    target: z.literal('implementation'),
+    title: z.string().min(1),
+    body: z.string().min(1)
+  }).strict()
+]);
 
 export const runFeedbackListResponseSchema = z.object({
   feedback: z.array(feedbackResponseSchema)

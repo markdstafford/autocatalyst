@@ -75,6 +75,7 @@ import {
   storedSessionSchema,
   sessionUsageSchema,
   testResultEvidenceSchema,
+  testResultItemSchema,
   testResultSchema,
   testingGuideSchema,
   testingGuideResultSchema,
@@ -115,6 +116,9 @@ import type {
   RunStepRepository,
   SessionRepository,
   TestResultRepository,
+  WriteTestingGuidePassInput,
+  FinalizeTestingGuidePassInput,
+  TestingGuidePassDecision,
   StoredTestingGuide,
   TestingGuideRepository,
   TopicRepository,
@@ -122,7 +126,7 @@ import type {
   UpdatePullRequestStateInput,
   UpdateRunStepCheckpointInput
 } from '@autocatalyst/core';
-import { RunTransitionConflictError, ArchivedRunRecoveryError, FeedbackConcurrentModificationError, PullRequestStateConflictError, runStepDefinitions } from '@autocatalyst/core';
+import { deriveTestResultOutcome, TestingGuidePassConflictError, RunTransitionConflictError, ArchivedRunRecoveryError, FeedbackConcurrentModificationError, PullRequestStateConflictError, runStepDefinitions } from '@autocatalyst/core';
 
 import { ActiveRunConflictPersistenceError, isActiveRunConstraintViolation } from './active-run-conflict.js';
 import {
@@ -895,6 +899,17 @@ export class DrizzleRunRepository implements RunRepository {
         throw new RunTransitionConflictError('source_occurrence_mismatch');
       }
 
+      if (input.testingGuideDecision !== undefined) {
+        if (source?.step !== 'implementation.human_review' || input.sourceRunStepId !== source.id ||
+            input.testingGuideDecision.pass.gateStepId !== source.id || input.testingGuideDecision.pass.runId !== input.runId) {
+          throw new RunTransitionConflictError('source_occurrence_mismatch');
+        }
+        commitTestingGuideDecision(tx, input.testingGuideDecision);
+      } else if (source?.step === 'implementation.human_review') {
+        tx.delete(testResults).where(and(eq(testResults.runId, input.runId), eq(testResults.gateStepId, source.id),
+          eq(testResults.state, 'working'))).run();
+      }
+
       const [updated] = tx.update(runs).set({
         currentStep: input.currentStep,
         terminal: input.terminal,
@@ -1116,6 +1131,46 @@ export class DrizzleArtifactRepository implements ArtifactRepository {
 // Feedback
 // ---------------------------------------------------------------------------
 
+function insertFeedback(db: DrizzleDb | DrizzleTx, input: CreateFeedbackInput, id: string, retryable = false): Feedback {
+  const parsed = createFeedbackInputSchema.parse(input);
+  const parentRows = db.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+  requireParent(parentRows, parsed.runId, 'Run');
+  const now = nowIso();
+  const entity: Feedback = validateEntity(feedbackSchema, {
+    id,
+    runId: parsed.runId,
+    owner: parsed.owner,
+    tenant: parsed.tenant,
+    target: parsed.target,
+    status: parsed.status,
+    title: parsed.title,
+    body: parsed.body,
+    ...(parsed.anchor === undefined ? {} : { anchor: parsed.anchor }),
+    thread: parsed.thread,
+    createdAt: now,
+    updatedAt: now
+  });
+
+  const insert = db.insert(feedback).values({
+    id: entity.id,
+    runId: entity.runId,
+    ownerJson: stringifyJsonValue(nonModelPrincipalSchema, entity.owner),
+    tenant: entity.tenant,
+    target: entity.target,
+    status: entity.status,
+    title: entity.title,
+    body: entity.body,
+    anchorJson: nullableJsonForRow(feedbackAnchorSchema, entity.anchor),
+    threadJson: stringifyJsonValue(feedbackThreadSchema, entity.thread),
+    createdAt: entity.createdAt,
+    updatedAt: entity.updatedAt
+  });
+  if (retryable) insert.onConflictDoNothing({ target: feedback.id }).run();
+  else insert.run();
+
+  return entity;
+}
+
 export class DrizzleFeedbackRepository implements FeedbackRepository {
   readonly #database;
 
@@ -1124,13 +1179,13 @@ export class DrizzleFeedbackRepository implements FeedbackRepository {
   }
 
   async create(input: CreateFeedbackInput): Promise<Feedback> {
-    return this.#create(input, `fb_${randomUUID()}`);
+    return insertFeedback(this.#database.drizzle, input, `fb_${randomUUID()}`);
   }
 
   async createSpecReviewFinding(id: string, input: CreateFeedbackInput): Promise<Feedback> {
     if (!/^fb_spec_[a-f0-9]{64}$/u.test(id) || input.target !== 'artifact' || input.status !== 'open' || input.anchor !== undefined ||
         input.thread[0]?.author.kind !== 'model') throw new Error('Invalid spec review feedback.');
-    this.#create(input, id, true);
+    insertFeedback(this.#database.drizzle, input, id, true);
     const row = await this.findById(id);
     if (row === null || row.runId !== input.runId || row.tenant !== input.tenant ||
         row.target !== 'artifact' || row.thread[0]?.author.kind !== 'model') {
@@ -1156,46 +1211,6 @@ export class DrizzleFeedbackRepository implements FeedbackRepository {
         tx.update(feedback).set({ anchorJson: next }).where(eq(feedback.id, item.id)).run();
       }
     });
-  }
-
-  #create(input: CreateFeedbackInput, id: string, retryable = false): Feedback {
-    const parsed = createFeedbackInputSchema.parse(input);
-    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
-    requireParent(parentRows, parsed.runId, 'Run');
-    const now = nowIso();
-    const entity: Feedback = validateEntity(feedbackSchema, {
-      id,
-      runId: parsed.runId,
-      owner: parsed.owner,
-      tenant: parsed.tenant,
-      target: parsed.target,
-      status: parsed.status,
-      title: parsed.title,
-      body: parsed.body,
-      ...(parsed.anchor === undefined ? {} : { anchor: parsed.anchor }),
-      thread: parsed.thread,
-      createdAt: now,
-      updatedAt: now
-    });
-
-    const insert = this.#database.drizzle.insert(feedback).values({
-      id: entity.id,
-      runId: entity.runId,
-      ownerJson: stringifyJsonValue(nonModelPrincipalSchema, entity.owner),
-      tenant: entity.tenant,
-      target: entity.target,
-      status: entity.status,
-      title: entity.title,
-      body: entity.body,
-      anchorJson: nullableJsonForRow(feedbackAnchorSchema, entity.anchor),
-      threadJson: stringifyJsonValue(feedbackThreadSchema, entity.thread),
-      createdAt: entity.createdAt,
-      updatedAt: entity.updatedAt
-    });
-    if (retryable) insert.onConflictDoNothing({ target: feedback.id }).run();
-    else insert.run();
-
-    return entity;
   }
 
   async findById(id: string): Promise<Feedback | null> {
@@ -1816,6 +1831,135 @@ export class DrizzleTestingGuideRepository implements TestingGuideRepository {
       .orderBy(desc(testingGuides.revision)).limit(1).get();
     return row ? mapTestingGuide(row.testing_guides) : null;
   }
+
+  async findByRunAndRevision({ runId, tenant, revision }: { runId: string; tenant: string; revision: number }): Promise<StoredTestingGuide | null> {
+    const row = this.#database.drizzle.select().from(testingGuides)
+      .innerJoin(runs, and(eq(runs.id, testingGuides.runId), eq(runs.tenant, testingGuides.tenant)))
+      .where(and(eq(testingGuides.runId, runId), eq(testingGuides.tenant, tenant), eq(testingGuides.revision, revision))).get();
+    return row ? mapTestingGuide(row.testing_guides) : null;
+  }
+}
+
+const testResultItemsSchema = z.array(testResultItemSchema);
+
+function rowToTestResult(row: typeof testResults.$inferSelect): TestResult {
+  const evidence = parseNullableJsonValue(testResultEvidenceSchema, row.evidenceJson);
+  return validateEntity(testResultSchema, {
+    id: row.id,
+    runId: row.runId,
+    tester: parseJsonValue(principalSchema, row.testerJson),
+    outcome: row.outcome,
+    ...(row.guideRevision === null ? {} : { guideRevision: row.guideRevision }),
+    state: row.state,
+    items: parseJsonValue(testResultItemsSchema, row.itemsJson),
+    ...(evidence === null ? {} : { evidence }),
+    feedbackRefs: parseJsonValue(feedbackRefsSchema, row.feedbackRefsJson),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt
+  });
+}
+
+function requireActivePass(tx: DrizzleTx, pass: WriteTestingGuidePassInput): void {
+  const active = tx.select({ id: runSteps.id }).from(runs).innerJoin(runSteps, eq(runSteps.runId, runs.id))
+    .where(and(eq(runs.id, pass.runId), eq(runs.tenant, pass.tenant), eq(runs.terminal, false),
+      eq(runs.currentStep, 'implementation.human_review'), eq(runSteps.step, runs.currentStep),
+      isNull(runSteps.endedAt)))
+    .orderBy(desc(runSteps.startedAt), desc(runSteps.id)).get();
+  if (active?.id !== pass.gateStepId) throw new TestingGuidePassConflictError();
+  const guide = tx.select().from(testingGuides)
+    .where(and(eq(testingGuides.runId, pass.runId), eq(testingGuides.tenant, pass.tenant)))
+    .orderBy(desc(testingGuides.revision)).get();
+  if (guide?.revision !== pass.guideRevision) throw new TestingGuidePassConflictError(guide?.revision);
+  const expectedIds = mapTestingGuide(guide).items.map(item => item.id);
+  if (expectedIds.length !== pass.items.length || expectedIds.some((id, i) => id !== pass.items[i]?.id)) {
+    throw new Error('Testing pass snapshot does not match its guide.');
+  }
+}
+
+function writeTestingPass(
+  tx: DrizzleTx, pass: WriteTestingGuidePassInput, state: 'working' | 'final', refs: readonly string[]
+): TestResult {
+  const where = eq(testResults.gateStepId, pass.gateStepId);
+  const existing = tx.select().from(testResults).where(where).get();
+  if (existing !== undefined &&
+      (existing.runId !== pass.runId || existing.guideRevision !== pass.guideRevision ||
+        tx.select({ id: runs.id }).from(runs).where(and(eq(runs.id, pass.runId), eq(runs.tenant, pass.tenant))).get() === undefined)) {
+    throw new TestingGuidePassConflictError();
+  }
+  if (existing?.state === 'final') {
+    if (state === 'final') return rowToTestResult(existing);
+    throw new TestingGuidePassConflictError();
+  }
+
+  requireActivePass(tx, pass);
+  const testerJson = stringifyJsonValue(principalSchema, pass.tester);
+  const itemsJson = stringifyJsonValue(testResultItemsSchema, pass.items);
+  if (existing?.state === 'working' && state === 'working' &&
+      existing.itemsJson === itemsJson && existing.testerJson === testerJson) return rowToTestResult(existing);
+
+  const values = {
+    testerJson, itemsJson, state, outcome: deriveTestResultOutcome(pass.items),
+    feedbackRefsJson: stringifyJsonValue(feedbackRefsSchema, refs),
+    updatedAt: nowIso()
+  };
+  const row = existing === undefined
+    ? tx.insert(testResults).values({
+        ...values, id: `test_${randomUUID()}`, runId: pass.runId,
+        guideRevision: pass.guideRevision, gateStepId: pass.gateStepId, createdAt: values.updatedAt
+      }).returning().get()
+    : tx.update(testResults).set(values).where(where).returning().get();
+  return rowToTestResult(row);
+}
+
+// Invoked only at the checked source-occurrence commit. Each link is durable if and only if the
+// feedback, final result, and step transition all commit.
+function commitTestingGuideDecision(tx: DrizzleTx, decision: TestingGuidePassDecision): void {
+  const { pass } = decision;
+  requireActivePass(tx, pass);
+  const where = and(eq(testResults.runId, pass.runId), eq(testResults.gateStepId, pass.gateStepId),
+    eq(testResults.state, 'working'));
+  const working = tx.select().from(testResults).where(where).get();
+  if (working?.id !== decision.workingResultId ||
+      (working !== undefined && (working.guideRevision !== pass.guideRevision ||
+        working.itemsJson !== stringifyJsonValue(testResultItemsSchema, pass.items)))) {
+    throw new TestingGuidePassConflictError();
+  }
+  if (decision.action === 'approve') {
+    if (pass.items.some(item => item.outcome === 'failed')) throw new Error('Cannot finalize approval with failed checks.');
+    writeTestingPass(tx, pass, 'final', []);
+    return;
+  }
+
+  const { replyFeedback, failures } = decision;
+  const createDecisionFeedback = ({ id, input }: { id: string; input: CreateFeedbackInput }) => {
+    if (input.runId !== pass.runId || input.tenant !== pass.tenant || input.target !== 'implementation' || input.status !== 'open') {
+      throw new Error('Invalid testing pass feedback scope.');
+    }
+    insertFeedback(tx, input, id);
+  };
+
+  if (replyFeedback !== undefined) createDecisionFeedback(replyFeedback);
+  const items = [...pass.items];
+  for (const failure of failures) {
+    const index = items.findIndex(item => item.id === failure.itemId);
+    const item = items[index];
+    if (working === undefined || item?.outcome !== 'failed' || item.feedbackId !== undefined) {
+      throw new Error('Invalid failed testing item link.');
+    }
+    createDecisionFeedback(failure);
+    items[index] = { ...item, feedbackId: failure.id };
+    tx.update(testResults).set({ itemsJson: stringifyJsonValue(testResultItemsSchema, items) }).where(where).run();
+  }
+  if (items.some(item => item.outcome === 'failed' && item.feedbackId === undefined)) {
+    throw new Error('Missing feedback for a failed testing item.');
+  }
+  const open = tx.select({ id: feedback.id }).from(feedback)
+    .where(and(eq(feedback.runId, pass.runId), eq(feedback.tenant, pass.tenant),
+      eq(feedback.target, 'implementation'), eq(feedback.status, 'open')))
+    .orderBy(asc(feedback.createdAt), asc(feedback.id)).all();
+  const refs = new Set(items.flatMap(item => item.outcome === 'failed' && item.feedbackId !== undefined ? [item.feedbackId] : []));
+  for (const { id } of open) refs.add(id);
+  writeTestingPass(tx, { ...pass, items }, 'final', [...refs]);
 }
 
 export class DrizzleTestResultRepository implements TestResultRepository {
@@ -1858,31 +2002,42 @@ export class DrizzleTestResultRepository implements TestResultRepository {
   async findById(id: string): Promise<TestResult | null> {
     const rows = this.#database.drizzle.select().from(testResults).where(eq(testResults.id, id)).limit(1).all();
     const row = rows[0];
-    return row === undefined ? null : this.#rowToTestResult(row);
+    return row === undefined ? null : rowToTestResult(row);
+  }
+
+  async findLatestFinalByRun(runId: string): Promise<TestResult | null> {
+    const row = this.#database.drizzle.select({ result: testResults }).from(testResults)
+      .innerJoin(runSteps, eq(runSteps.id, testResults.gateStepId))
+      .where(and(eq(testResults.runId, runId), eq(testResults.state, 'final'), isNotNull(testResults.guideRevision)))
+      .orderBy(sql`json_extract(${runSteps.occurrenceJson}, '$.index') DESC`).get();
+    return row === undefined ? null : rowToTestResult(row.result);
+  }
+
+  async findWorkingByRun(runId: string): Promise<(TestResult & { gateStepId: string }) | null> {
+    const row = this.#database.drizzle.select().from(testResults)
+      .where(and(eq(testResults.runId, runId), eq(testResults.state, 'working'))).get();
+    if (row === undefined) return null;
+    if (row.gateStepId === null) throw new Error('Working test result has no gate occurrence.');
+    return { ...rowToTestResult(row), gateStepId: row.gateStepId };
+  }
+
+  async saveWorking(input: WriteTestingGuidePassInput): Promise<TestResult> {
+    if (input.items.some(item => item.feedbackId !== undefined)) throw new Error('Working test result cannot link feedback.');
+    return this.#database.drizzle.transaction(tx => writeTestingPass(tx, input, 'working', []), { behavior: 'immediate' });
+  }
+
+  async finalize(input: FinalizeTestingGuidePassInput): Promise<TestResult> {
+    return this.#database.drizzle.transaction(
+      tx => writeTestingPass(tx, input, 'final', input.feedbackRefs), { behavior: 'immediate' });
   }
 
   async listByRun(runId: string): Promise<readonly TestResult[]> {
-    const rows = this.#database.drizzle
-      .select()
-      .from(testResults)
+    const rows = this.#database.drizzle.select({ result: testResults }).from(testResults)
+      .leftJoin(runSteps, eq(runSteps.id, testResults.gateStepId))
       .where(eq(testResults.runId, runId))
-      .orderBy(asc(testResults.createdAt), asc(testResults.id))
-      .all();
-    return rows.map((row) => this.#rowToTestResult(row));
-  }
-
-  #rowToTestResult(row: typeof testResults.$inferSelect): TestResult {
-    const evidence = parseNullableJsonValue(testResultEvidenceSchema, row.evidenceJson);
-    return validateEntity(testResultSchema, {
-      id: row.id,
-      runId: row.runId,
-      tester: parseJsonValue(principalSchema, row.testerJson),
-      outcome: row.outcome,
-      ...(evidence === null ? {} : { evidence }),
-      feedbackRefs: parseJsonValue(feedbackRefsSchema, row.feedbackRefsJson),
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt
-    });
+      .orderBy(sql`CASE WHEN ${testResults.state} = 'working' THEN 2 WHEN ${testResults.guideRevision} IS NULL THEN 0 ELSE 1 END`,
+        sql`json_extract(${runSteps.occurrenceJson}, '$.index')`, asc(testResults.createdAt), asc(testResults.id)).all();
+    return rows.map(({ result }) => rowToTestResult(result));
   }
 }
 

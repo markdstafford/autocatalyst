@@ -6,11 +6,12 @@ import {
   degradedHealthStatusCode,
   probeResourceCollectionPath,
   runCollectionPath,
-  type ProbeResource
+  type ProbeResource,
+  type SaveTestingGuideResultsRequest
 } from '@autocatalyst/api-contract';
 import { registerControlPlaneRoutes } from '@autocatalyst/core';
 
-import { ControlPlaneClientError, createControlPlaneClient } from './client.js';
+import { ControlPlaneClientError, createControlPlaneClient, type ControlPlaneClient } from './client.js';
 
 describe('bearer token auth', () => {
   it('sends authorization header on protected calls when bearerToken is configured', async () => {
@@ -527,6 +528,108 @@ describe('ControlPlaneClient.getRunTestingGuide', () => {
   });
 });
 
+describe('ControlPlaneClient testing guide results', () => {
+  const runId = 'run/1 ?#';
+  const runUrl = 'http://localhost:3000/v1/runs/run%2F1%20%3F%23';
+  const seeded = {
+    guideRevision: 2, state: 'working', outcome: 'inconclusive',
+    items: [{ id: 'a' }, { id: 'b', note: 'Retest later.' }, { id: 'c', note: 'Check logs.' }]
+  };
+  const saveRequest: SaveTestingGuideResultsRequest = {
+    guideRevision: 2,
+    items: [{ id: 'a', outcome: 'passed', note: 'Works.' }, { id: 'b', outcome: null, note: null }]
+  };
+  const saved = {
+    guideRevision: 2, state: 'working', outcome: 'passed', testResultId: 'test_2',
+    items: [{ id: 'a', outcome: 'passed', note: 'Works.' }, { id: 'b' }, { id: 'c', note: 'Check logs.' }]
+  };
+  const legacy = {
+    id: 'test_1', runId, tester: { kind: 'human', id: 'user_1', tenantId: 'tenant_1' },
+    outcome: 'blocked', feedbackRefs: ['fb_1'],
+    createdAt: '2026-06-12T00:00:00.000Z', updatedAt: '2026-06-12T00:00:00.000Z'
+  };
+  const history = { testResults: [legacy] };
+
+  function setup() {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', bearerToken: 'test-token', fetch });
+    return { client, fetch };
+  }
+
+  it('gets and parses the seeded pass on the encoded run URL without a result ID', async () => {
+    const { client, fetch } = setup();
+    fetch.mockResolvedValueOnce(Response.json(seeded, { status: 200 }));
+
+    await expect(client.getTestingGuideResults(runId)).resolves.toEqual(seeded);
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(new URL(`${runUrl}/testing-guide/results`), {
+      method: 'GET', headers: { authorization: 'Bearer test-token' }
+    });
+  });
+
+  it('puts a partial update with explicit nulls and parses the stored pass', async () => {
+    const { client, fetch } = setup();
+    fetch.mockResolvedValueOnce(Response.json(saved, { status: 200 }));
+
+    await expect(client.saveTestingGuideResults(runId, saveRequest)).resolves.toEqual(saved);
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(new URL(`${runUrl}/testing-guide/results`), {
+      method: 'PUT',
+      headers: { authorization: 'Bearer test-token', 'content-type': 'application/json' },
+      body: JSON.stringify(saveRequest)
+    });
+  });
+
+  it('lists history on the encoded run URL and applies legacy result defaults', async () => {
+    const { client, fetch } = setup();
+    fetch.mockResolvedValueOnce(Response.json(history, { status: 200 }));
+
+    await expect(client.listRunTestResults(runId)).resolves.toEqual({
+      testResults: [{ ...legacy, state: 'final', items: [] }]
+    });
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(new URL(`${runUrl}/test-results`), {
+      method: 'GET', headers: { authorization: 'Bearer test-token' }
+    });
+  });
+
+  it.each([
+    {
+      method: 'getTestingGuideResults',
+      call: (client: ControlPlaneClient) => client.getTestingGuideResults(runId),
+      valid: seeded,
+      invalid: { ...seeded, guideRevision: 0 }
+    },
+    {
+      method: 'saveTestingGuideResults',
+      call: (client: ControlPlaneClient) => client.saveTestingGuideResults(runId, saveRequest),
+      valid: saved,
+      invalid: { ...saved, items: [{ id: 'a', outcome: null }] }
+    },
+    {
+      method: 'listRunTestResults',
+      call: (client: ControlPlaneClient) => client.listRunTestResults(runId),
+      valid: history,
+      invalid: { testResults: [{ ...legacy, state: 'unknown' }] }
+    }
+  ])('$method requires HTTP 200 and a valid response body', async ({ call, valid, invalid }) => {
+    const { client, fetch } = setup();
+    fetch.mockResolvedValueOnce(Response.json(valid, { status: 201 }))
+      .mockResolvedValueOnce(Response.json(invalid, { status: 200 }));
+
+    await expect(call(client)).rejects.toThrow('Expected 200');
+    await expect(call(client)).rejects.toMatchObject({ name: 'ZodError' });
+  });
+
+  it.each([
+    { name: 'server-owned fields', items: [{ ...saveRequest.items[0], feedbackId: 'fb_1' }] },
+    { name: 'duplicate IDs', items: [saveRequest.items[0], saveRequest.items[0]] }
+  ])('rejects saves with $name before sending', async ({ items }) => {
+    const { client, fetch } = setup();
+
+    await expect(client.saveTestingGuideResults(runId, { ...saveRequest, items }))
+      .rejects.toMatchObject({ name: 'ZodError' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('ControlPlaneClient.getRunSpec', () => {
   it('calls GET /v1/runs/:id/spec with bearer header and parses response', async () => {
     const specResponse = {
@@ -611,18 +714,46 @@ describe('ControlPlaneClient.createRunFeedback', () => {
     expect(result.status).toBe('open');
   });
 
-  it('rejects non-artifact target before sending (pre-send validation)', async () => {
+  const implementationRequest = { target: 'implementation' as const, title: 'Help text', body: 'Fix the typo.' };
+  const implementationFeedback = {
+    ...feedbackItem,
+    runId: 'run/1',
+    ...implementationRequest,
+    thread: [{ ...feedbackItem.thread[0], body: implementationRequest.body }]
+  };
+
+  it('posts unanchored implementation feedback on the encoded run URL and parses the 201 response', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(implementationFeedback, { status: 201 }));
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', bearerToken: 'test-token', fetch });
+
+    await expect(client.createRunFeedback('run/1', implementationRequest)).resolves.toEqual(implementationFeedback);
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(new URL('http://localhost:3000/v1/runs/run%2F1/feedback'), {
+      method: 'POST',
+      headers: { authorization: 'Bearer test-token', 'content-type': 'application/json' },
+      body: JSON.stringify(implementationRequest)
+    });
+  });
+
+  it('requires HTTP 201 and valid feedback on implementation creation', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(Response.json(implementationFeedback, { status: 200 }))
+      .mockResolvedValueOnce(Response.json({ ...implementationFeedback, tenant: 'wrong_tenant' }, { status: 201 }));
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', bearerToken: 'test-token', fetch });
+
+    await expect(client.createRunFeedback('run/1', implementationRequest)).rejects.toThrow('Expected 201');
+    await expect(client.createRunFeedback('run/1', implementationRequest)).rejects.toMatchObject({ name: 'ZodError' });
+  });
+
+  it('rejects an anchor on implementation feedback before sending', async () => {
     const mockFetch = vi.fn();
     const client = createControlPlaneClient({
       baseUrl: 'http://localhost:3000',
       bearerToken: 'test-token',
       fetch: mockFetch
     });
-    await expect(client.createRunFeedback('run_1', {
-      target: 'implementation' as unknown as 'artifact',
-      title: 'Title',
-      body: 'Body'
-    })).rejects.toThrow();
+    const anchoredRequest = { ...implementationRequest, anchor: { kind: 'artifact', artifactId: 'art_1' } };
+    await expect(client.createRunFeedback('run_1', anchoredRequest)).rejects.toMatchObject({ name: 'ZodError' });
     expect(mockFetch).not.toHaveBeenCalled();
   });
 

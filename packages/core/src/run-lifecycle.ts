@@ -1,6 +1,6 @@
 import type { CreateRunInput, JsonValue, NonModelPrincipal, Run, RunStep, TestingGuideResult, TrackedIssue } from '@autocatalyst/api-contract';
 
-import { RunTransitionConflictError, type LifecycleRunStepInput, type RunRepository } from './domain-repositories.js';
+import { RunTransitionConflictError, type LifecycleRunStepInput, type TestingGuidePassDecision, type RunRepository } from './domain-repositories.js';
 import { deriveRunTerminal, getRunStepDefinition, type RunStepDefinition } from './run-step-catalog.js';
 import { nextWorkflowStep, type TransitionErrorCode, type TransitionResult } from './run-transition.js';
 import type { RunDirective, RunWorkflowDefinition } from './run-workflows.js';
@@ -56,6 +56,7 @@ export interface ApplyRunDirectiveInput {
   readonly directive: RunDirective;
   readonly source?: Run;
   readonly sourceRunStepId?: string;
+  readonly testingGuideDecision?: TestingGuidePassDecision;
   readonly checkpointResult?: JsonValue;
   readonly destinationCheckpointResult?: JsonValue;
   readonly reason?: string;
@@ -161,6 +162,7 @@ export async function applyRunDirective(input: ApplyRunDirectiveInput): Promise<
       runStep: buildEntryRunStep(step, now(input.clock)),
       ...(input.sourceRunStepId !== undefined ? { sourceRunStepId: input.sourceRunStepId }
         : sourceRunStep !== null ? { sourceRunStepId: sourceRunStep.id } : {}),
+      ...(input.testingGuideDecision !== undefined ? { testingGuideDecision: input.testingGuideDecision } : {}),
       ...(input.publicationProvenance !== undefined ? { publicationProvenance: input.publicationProvenance } : {}),
       ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {}),
       ...(input.destinationCheckpointResult !== undefined ? { destinationCheckpointResult: input.destinationCheckpointResult } : {}),
