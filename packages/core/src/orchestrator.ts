@@ -1,4 +1,6 @@
 import { assignTestingGuideItemIds, authorTestingGuide } from './testing-guide.js';
+import { failedTestingItemFeedbackBody, patchTestingGuideItems, readWorkingTestingGuidePass, testingGuidePassView } from './testing-guide-results.js';
+import { TestingGuidePassConflictError, type TestingGuidePassDecision, type TestResultRepository } from './domain-repositories.js';
 import type { StoredTestingGuide, TestingGuideRepository } from './domain-repositories.js';
 import { ArchivedRunRecoveryError, RunTransitionConflictError } from './domain-repositories.js';
 import { workflowOwnedSteps } from './run-transition.js';
@@ -23,6 +25,8 @@ import type {
   RunStep,
   SpecAuthorResult,
   TestingGuideResult,
+  SaveTestingGuideResultsRequest,
+  TestingGuideResults,
   Topic,
   TrackedIssue
 } from '@autocatalyst/api-contract';
@@ -75,7 +79,7 @@ import {
   type RefreshPullRequestOutcome
 } from './pr-lifecycle.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
-import { createGateFeedback, listBlockingFeedback, resolveApproverAddressedFeedback } from './feedback-lifecycle.js';
+import { buildGateFeedback, createGateFeedback, listBlockingFeedback, resolveApproverAddressedFeedback } from './feedback-lifecycle.js';
 import { assertSpecReviewGateCanAdvance, SpecReviewGateBlockedError } from './spec-review-gate.js';
 import {
   assertHumanReviewGateCanAdvance,
@@ -108,7 +112,8 @@ export type OrchestratorErrorCode =
   | 'invalid_transition'
   | 'unknown_work_kind'
   | 'forbidden'
-  | 'persistence_failed';
+  | 'persistence_failed'
+  | 'unknown_test_items';
 
 export interface ActiveRunConflictDetails {
   readonly topicId: string;
@@ -225,7 +230,8 @@ type CommitDispatchTransition = (
 
 type ApplyLockedDirective = (
   input: ApplyOrchestratedDirectiveInput,
-  source?: DispatchSource
+  source?: DispatchSource,
+  decision?: TestingGuidePassDecision
 ) => Promise<OrchestratedRunResult>;
 
 export interface DispatchRunInput {
@@ -276,7 +282,13 @@ export interface DeclineSpecFindingInput {
   readonly body: string;
 }
 
+type ImplementationGateMutationInput = DispatchRunInput & { readonly principal: NonModelPrincipal };
+type SaveTestingPassInput = ImplementationGateMutationInput & { readonly request: SaveTestingGuideResultsRequest };
+type CreateImplementationFeedbackInput = ImplementationGateMutationInput & { readonly title: string; readonly body: string };
+
 export interface Orchestrator {
+  saveTestingGuideResults?(input: SaveTestingPassInput): Promise<TestingGuideResults>;
+  createImplementationFeedback?(input: CreateImplementationFeedbackInput): Promise<Feedback>;
   declineSpecFinding?(input: DeclineSpecFindingInput): Promise<Feedback>;
   createRun(input: CreateOrchestratedRunInput): Promise<OrchestratedRunResult>;
   createConversationWithFirstRun(input: CreateOrchestratedConversationInput): Promise<OrchestratedConversationResult>;
@@ -337,6 +349,7 @@ export interface DefaultOrchestratorOptions {
   readonly specFreezeDependencies?: SpecFreezeDependencies;
   readonly runSteps?: RunStepRepository;
   readonly testingGuides?: TestingGuideRepository;
+  readonly testResults?: TestResultRepository;
   readonly convergenceEngine?: ConvergenceEngine;
   readonly autoDispatch?: AutoDispatchOptions;
   readonly pullRequestOpenDependencies?: PullRequestOpenWiringDependencies;
@@ -380,6 +393,12 @@ class TestingGuideAdvanceInterrupted extends Error {
 
 // --- Implementation ---
 
+function testingPassConflict(error: TestingGuidePassConflictError): OrchestratorError {
+  return new OrchestratorError('conflict', error.message, error.latestGuideRevision === undefined ? {} : {
+    details: { code: 'stale_guide_revision', latestGuideRevision: error.latestGuideRevision }
+  });
+}
+
 export class DefaultOrchestrator implements Orchestrator {
   readonly #runs: RunRepository;
   readonly #workflowResolver: RunWorkflowResolver;
@@ -403,6 +422,7 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #specFreezeDependencies: SpecFreezeDependencies | undefined;
   readonly #runSteps: RunStepRepository | undefined;
   readonly #testingGuides: TestingGuideRepository | undefined;
+  readonly #testResults: TestResultRepository | undefined;
   readonly #convergenceEngine: ConvergenceEngine | undefined;
   readonly #repairEpoch = randomUUID();
   readonly #repairWakeups = new Set<string>();
@@ -436,6 +456,7 @@ export class DefaultOrchestrator implements Orchestrator {
     this.#specFreezeDependencies = options.specFreezeDependencies;
     this.#runSteps = options.runSteps;
     this.#testingGuides = options.testingGuides;
+    this.#testResults = options.testResults;
     this.#convergenceEngine = options.convergenceEngine;
     this.#pullRequestOpenDependencies = options.pullRequestOpenDependencies;
   }
@@ -603,8 +624,8 @@ export class DefaultOrchestrator implements Orchestrator {
       }
     };
     try {
-      return await work(async (directive, source) => {
-        const result = await this.#applyDirectiveUnderLock(directive, source);
+      return await work(async (directive, source, decision) => {
+        const result = await this.#applyDirectiveUnderLock(directive, source, decision);
         // The next dispatch needs its persisted checkpoint, including a private spec answer.
         await admit(result);
         return { ...result, runStep: { ...result.runStep, checkpointResult: publicSpecCheckpoint(result.runStep.checkpointResult) } };
@@ -755,7 +776,9 @@ export class DefaultOrchestrator implements Orchestrator {
     }
   }
 
-  async #applyDirectiveUnderLock(input: ApplyOrchestratedDirectiveInput, source?: DispatchSource): Promise<OrchestratedRunResult> {
+  async #applyDirectiveUnderLock(
+    input: ApplyOrchestratedDirectiveInput, source?: DispatchSource, decision?: TestingGuidePassDecision
+  ): Promise<OrchestratedRunResult> {
     const existing = source?.run ?? await this.#runs.findById(input.runId);
     if (existing === null) {
       throw new OrchestratorError('missing_run', `Run '${input.runId}' does not exist.`);
@@ -899,7 +922,9 @@ export class DefaultOrchestrator implements Orchestrator {
         runId: input.runId,
         directive: input.directive,
         source: existing,
-        ...(source?.runStep == null ? {} : { sourceRunStepId: source.runStep.id }),
+        ...(input.expectedStepId !== undefined ? { sourceRunStepId: input.expectedStepId }
+          : source?.runStep == null ? {} : { sourceRunStepId: source.runStep.id }),
+        ...(decision === undefined ? {} : { testingGuideDecision: decision }),
         ...(input.refreshPublication ? { refreshPublication: true } : {}),
         ...(input.publicationProvenance !== undefined ? { publicationProvenance: input.publicationProvenance } : {}),
         ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {}),
@@ -908,6 +933,12 @@ export class DefaultOrchestrator implements Orchestrator {
         ...(this.#clock !== undefined ? { clock: this.#clock } : {})
       });
     } catch (error) {
+      if (error instanceof RunLifecycleError && decision !== undefined) {
+        if (error.cause instanceof TestingGuidePassConflictError) throw testingPassConflict(error.cause);
+        if (error.code === 'source_occurrence_mismatch' || error.code === 'source_step_mismatch') {
+          throw testingPassConflict(new TestingGuidePassConflictError());
+        }
+      }
       if (error instanceof RunLifecycleError) {
         throw this.#mapLifecycleError(error);
       }
@@ -1882,7 +1913,71 @@ export class DefaultOrchestrator implements Orchestrator {
     });
   }
 
+  async #observeImplementationGate(input: DispatchRunInput): Promise<RunStep | null> {
+    const run = await this.#runs.findById(input.runId);
+    if (run === null || run.tenant !== input.tenant) throw new OrchestratorError('missing_run', 'Run not found.');
+    return run.currentStep === 'implementation.human_review' && !run.terminal ? this.#openRunStep(run) : null;
+  }
+
+  async #requireLiveImplementationGate(input: DispatchRunInput, expected: RunStep | null): Promise<Run> {
+    const run = await this.#runs.findById(input.runId);
+    if (run === null || run.tenant !== input.tenant) throw new OrchestratorError('missing_run', 'Run not found.');
+    if (expected === null || run.terminal || run.currentStep !== 'implementation.human_review' ||
+        (await this.#openRunStep(run))?.id !== expected.id) {
+      throw new OrchestratorError('conflict', 'The request requires the active implementation review occurrence.');
+    }
+    return run;
+  }
+
+  async saveTestingGuideResults(input: SaveTestingPassInput): Promise<TestingGuideResults> {
+    const gate = await this.#observeImplementationGate(input);
+    if (gate === null) throw new OrchestratorError('conflict', 'Testing results can only be saved at implementation review.');
+    return this.#withRunMutation(input, async () => {
+      const run = await this.#requireLiveImplementationGate(input, gate);
+      const guides = this.#testingGuides;
+      const results = this.#testResults;
+      if (!guides || !results) throw new OrchestratorError('persistence_failed', 'Testing results are unavailable.');
+      const guide = await guides.findLatestByRun({ runId: run.id, tenant: run.tenant });
+      if (guide === null) throw new OrchestratorError('missing_run', 'Testing guide not found.');
+      if (guide.revision !== input.request.guideRevision) {
+        throw testingPassConflict(new TestingGuidePassConflictError(guide.revision));
+      }
+      const ids = new Set(guide.items.map(item => item.id));
+      const unknownItemIds = input.request.items.filter(item => !ids.has(item.id)).map(item => item.id);
+      if (unknownItemIds.length) {
+        throw new OrchestratorError('unknown_test_items', 'One or more items are not in the current testing guide.', {
+          details: { unknownItemIds }
+        });
+      }
+      const current = await readWorkingTestingGuidePass(guide, gate.id, run.tenant, guides, results);
+      try {
+        const saved = await results.saveWorking({
+          runId: run.id, tenant: run.tenant, gateStepId: gate.id, guideRevision: guide.revision, tester: input.principal,
+          items: patchTestingGuideItems(current.items, input.request.items)
+        });
+        return testingGuidePassView(guide, saved);
+      } catch (error) {
+        if (error instanceof TestingGuidePassConflictError) throw testingPassConflict(error);
+        throw error;
+      }
+    });
+  }
+
+  async createImplementationFeedback(input: CreateImplementationFeedbackInput): Promise<Feedback> {
+    const gate = await this.#observeImplementationGate(input);
+    return this.#withRunMutation(input, async () => {
+      const run = await this.#requireLiveImplementationGate(input, gate);
+      const deps = this.#feedbackLifecycleDependencies;
+      if (!deps) throw new OrchestratorError('persistence_failed', 'Feedback is unavailable.');
+      return createGateFeedback({
+        runId: run.id, tenant: run.tenant, owner: run.owner, principal: input.principal,
+        target: 'implementation', title: input.title, body: input.body
+      }, deps);
+    });
+  }
+
   async replyToRun(input: ReplyToRunInput): Promise<ReplyToRunResult> {
+    const observedGate = this.#testResults === undefined ? undefined : await this.#observeImplementationGate(input);
     return this.#withRunMutation(input, async (apply) => {
       const run = await this.#runs.findById(input.runId);
       if (run === null) throw new OrchestratorError('missing_run', `Run '${input.runId}' does not exist.`);
@@ -1910,8 +2005,11 @@ export class DefaultOrchestrator implements Orchestrator {
         }
       }
 
+      if (observedGate != null || (observedGate === null && run.currentStep === 'implementation.human_review')) {
+        await this.#requireLiveImplementationGate(input, observedGate ?? null);
+      }
       if (isHumanReviewGateStep(run.currentStep)) {
-        return this.#replyToHumanReviewGate({ ...input, run }, apply);
+        return this.#replyToHumanReviewGate({ ...input, run }, apply, observedGate ?? undefined);
       }
 
       if (run.currentStep === 'spec.awaiting_input') {
@@ -1933,7 +2031,9 @@ export class DefaultOrchestrator implements Orchestrator {
     });
   }
 
-  async #replyToHumanReviewGate(input: ReplyToRunInput & { readonly run: Run }, apply: ApplyLockedDirective): Promise<ReplyToRunResult> {
+  async #replyToHumanReviewGate(
+    input: ReplyToRunInput & { readonly run: Run }, apply: ApplyLockedDirective, gate?: RunStep
+  ): Promise<ReplyToRunResult> {
     if (input.request.kind === 'guidance') {
       throw new OrchestratorError('invalid_transition', 'Guidance replies are only supported at an active input pause.',
         input.request.pauseStepId ? { details: { code: 'stale_pause' } } : {});
@@ -1946,6 +2046,58 @@ export class DefaultOrchestrator implements Orchestrator {
       throw new OrchestratorError('invalid_transition', `Reply not supported for step '${input.run.currentStep}'.`);
     }
     const target = getHumanReviewGateFeedbackTarget(input.run.currentStep);
+
+    const results = this.#testResults;
+    const guides = this.#testingGuides;
+    const guide = gate && results ? await guides?.findLatestByRun(input) : undefined;
+    const pass = gate && guide && guides && results
+      ? await readWorkingTestingGuidePass(guide, gate.id, input.tenant, guides, results)
+      : undefined;
+    const failedItemIds = pass?.items.filter(item => item.outcome === 'failed').map(item => item.id) ?? [];
+    if (input.request.kind === 'approve' && failedItemIds.length) {
+      throw new OrchestratorError('invalid_transition', 'Failed testing items block approval.', {
+        details: { code: 'failed_test_items', failedItemIds }
+      });
+    }
+
+    const commit = (directive: 'revise' | 'advance', decision?: TestingGuidePassDecision) =>
+      apply({ runId: input.runId, tenant: input.tenant, directive, origin: 'human', principal: input.principal,
+        ...(gate === undefined ? {} : { expectedStepId: gate.id }) },
+        gate === undefined ? undefined : { run: input.run, runStep: gate }, decision);
+
+    if (gate && guide && pass && input.request.kind !== 'approve') {
+      const deps = this.#feedbackLifecycleDependencies;
+      if (input.request.kind === 'request_changes' && failedItemIds.length === 0 &&
+          !(await deps.feedback.listByRun(input.runId)).some(item => item.target === 'implementation' && item.status === 'open')) {
+        throw new OrchestratorError('invalid_transition', 'There is no open implementation feedback and no failed check.', {
+          details: { code: 'request_changes_conflict' }
+        });
+      }
+      const planFeedback = (title: string, body: string, anchor?: Feedback['anchor']) => ({
+        id: `fb_${randomUUID()}`,
+        input: buildGateFeedback({
+          runId: input.runId, tenant: input.tenant, owner: input.run.owner,
+          principal: input.principal, target, title, body, ...(anchor === undefined ? {} : { anchor })
+        }, deps)
+      });
+      const replyFeedback = input.request.kind === 'feedback'
+        ? planFeedback(input.request.title, input.request.body, input.request.anchor) : undefined;
+      const failures = guide.items.flatMap((item, index) => {
+        const mark = pass.items[index];
+        if (mark?.outcome !== 'failed' || mark.feedbackId !== undefined) return [];
+        return [{ itemId: item.id, ...planFeedback(item.text, failedTestingItemFeedbackBody(item, mark.note)) }];
+      });
+      const moved = await commit('revise', {
+        action: 'revise',
+        pass: { runId: input.runId, tenant: input.tenant, gateStepId: gate.id, guideRevision: guide.revision,
+          tester: input.principal, items: pass.items },
+        ...(pass.testResultId === undefined ? {} : { workingResultId: pass.testResultId }),
+        ...(replyFeedback === undefined ? {} : { replyFeedback }),
+        failures
+      });
+      return { ...moved, classification: { directive: 'revise', target,
+        ...(replyFeedback === undefined ? {} : { createdFeedbackId: replyFeedback.id }) } };
+    }
 
     if (input.request.kind === 'request_changes') {
       // Request changes operates over feedback already raised; it creates no item. It applies the
@@ -1962,7 +2114,7 @@ export class DefaultOrchestrator implements Orchestrator {
           { details: { code: 'request_changes_conflict' } }
         );
       }
-      const moved = await apply({ runId: input.runId, tenant: input.tenant, directive: 'revise', origin: 'human', principal: input.principal });
+      const moved = await commit('revise');
       // Intentionally no createdFeedbackId: request_changes operates over existing comments.
       return { ...moved, classification: { directive: 'revise', target } };
     }
@@ -1978,7 +2130,7 @@ export class DefaultOrchestrator implements Orchestrator {
         body: input.request.body,
         ...(input.request.anchor !== undefined ? { anchor: input.request.anchor } : {})
       }, this.#feedbackLifecycleDependencies);
-      const moved = await apply({ runId: input.runId, tenant: input.tenant, directive: 'revise', origin: 'human', principal: input.principal });
+      const moved = await commit('revise');
       return { ...moved, classification: { directive: 'revise', target, createdFeedbackId: feedback.id } };
     }
 
@@ -2005,7 +2157,12 @@ export class DefaultOrchestrator implements Orchestrator {
       }
     }
 
-    const moved = await apply({ runId: input.runId, tenant: input.tenant, directive: 'advance', origin: 'human', principal: input.principal });
+    const moved = await commit('advance', gate && guide && pass ? {
+      action: 'approve',
+      pass: { runId: input.runId, tenant: input.tenant, gateStepId: gate.id, guideRevision: guide.revision,
+        tester: input.principal, items: pass.items },
+      ...(pass.testResultId === undefined ? {} : { workingResultId: pass.testResultId })
+    } : undefined);
     return { ...moved, classification: { directive: 'advance', target } };
   }
 

@@ -3,16 +3,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { FastifyInstance } from 'fastify';
+import type { Principal } from '@autocatalyst/api-contract';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createDrizzleDomainRepositories, createSqliteDatabase, DrizzleRunRepository } from '@autocatalyst/persistence';
+import { asInternalSqliteDatabase, createDrizzleDomainRepositories, createSqliteDatabase, DrizzleRunRepository } from '@autocatalyst/persistence';
 
 import { readControlPlaneAppConfig } from '../config.js';
 import { createControlPlaneServer, type ControlPlaneServerOptions } from '../server.js';
 import { createControlPlaneClient } from '@autocatalyst/sdk';
-import type { ControlPlaneService } from '@autocatalyst/core';
+import { DefaultOrchestrator, InMemoryRunEventBus, RunDispatchQueue, type ControlPlaneService } from '@autocatalyst/core';
 import { readLaunchCounter } from './launch-context.js';
 import * as scriptedResults from './scripted-results.js';
+import * as scriptedLaunch from './scripted-launch.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -325,7 +327,7 @@ function sdkFor(app: FastifyInstance) {
     baseUrl: 'http://fake.test', bearerToken: 'fake-mode-token',
     fetch: async (url, init) => {
       const response = await app.inject({
-        url: String(url), method: (init?.method ?? 'GET') as 'GET' | 'POST' | 'PATCH',
+        url: String(url), method: (init?.method ?? 'GET') as 'GET' | 'POST' | 'PATCH' | 'PUT',
         headers: Object.fromEntries(new Headers(init?.headers)),
         ...(typeof init?.body === 'string' ? { payload: init.body } : {})
       });
@@ -335,6 +337,183 @@ function sdkFor(app: FastifyInstance) {
 }
 
 describe('testing guide fake-mode wiring without a listening socket', () => {
+  it('validates partial saves, rolls back a reply after linking the first failure, and dispatches separate testing notes', async () => {
+    const prompts: string[] = [];
+    const launch = scriptedLaunch.launchScript;
+    const launchSpy = vi.spyOn(scriptedLaunch, 'launchScript').mockImplementation(input => {
+      const session = launch(input);
+      return options => {
+        prompts.push(options.prompt);
+        return session(options);
+      };
+    });
+    let principal: Principal = { id: 'operator', kind: 'human', tenantId: FAKE_TENANT };
+    const { app, stateDir } = await startFakeServer({ resolvePrincipal: () => principal });
+    const client = sdkFor(app);
+    const db = createSqliteDatabase({ path: resolveFakeStatePaths(stateDir).databasePath });
+    const raw = asInternalSqliteDatabase(db).client;
+    try {
+      const id = await startRunFromIssue(app, await createSecretAndProject(app), 1);
+      await waitForStep(app, id, 'spec.human_review');
+      await expect(client.listRunTestResults(id)).resolves.toEqual({ testResults: [] });
+      await expect(client.getTestingGuideResults(id)).rejects.toMatchObject({ status: 404 });
+      await expect(client.saveTestingGuideResults(id, { guideRevision: 1, items: [] })).rejects.toMatchObject({ status: 409 });
+      await expect(client.createRunFeedback(id, { target: 'implementation', title: 'Early', body: 'Not at implementation' }))
+        .rejects.toMatchObject({ status: 409 });
+      await client.replyToRun(id, { kind: 'approve' });
+      await waitForStep(app, id, 'implementation.human_review');
+      const guide = await client.getRunTestingGuide(id);
+      const [a, b, c, d] = guide.items;
+      const url = `/v1/runs/${id}/testing-guide/results`;
+      const put = (payload: object) => app.inject({ url, method: 'PUT', headers: AUTH, payload });
+      const operator = principal;
+      principal = { ...operator, kind: 'model' };
+      expect((await put({ guideRevision: 1, items: [] })).statusCode).toBe(403);
+      principal = { ...operator, tenantId: 'other_tenant' };
+      expect((await put({ guideRevision: 1, items: [] })).statusCode).toBe(404);
+      await expect(client.getTestingGuideResults(id)).rejects.toMatchObject({ status: 404 });
+      await expect(client.listRunTestResults(id)).rejects.toMatchObject({ status: 404 });
+      principal = operator;
+      const anchored = await app.inject({ url: `/v1/runs/${id}/feedback`, method: 'POST', headers: AUTH,
+        payload: { target: 'implementation', title: 'No anchor', body: 'No anchor', anchor: { kind: 'artifact', artifactId: 'x' } } });
+      expect(anchored.statusCode).toBe(400);
+      await expect(client.replyToRun(id, { kind: 'request_changes' })).rejects.toMatchObject({
+        status: 409, response: { error: { details: { code: 'request_changes_conflict' } } }
+      });
+      for (const patch of [
+        { items: [], unexpected: true },
+        { items: [{ id: a!.id, outcome: 'passed', note: null }, { id: a!.id, outcome: null, note: 'dupe' }] },
+        { items: [{ id: a!.id, outcome: 'inconclusive', note: null }] },
+        { items: [{ id: a!.id, outcome: 'passed', note: 'x'.repeat(2_001) }] }
+      ]) {
+        const rejected = await put({ guideRevision: 1, ...patch });
+        expect(rejected.statusCode).toBe(400);
+        expect(rejected.json().error.code).toBe('validation_error');
+      }
+      await expect(client.saveTestingGuideResults(id, { guideRevision: 2, items: [] })).rejects.toMatchObject({
+        status: 409, response: { error: { code: 'conflict', details: { code: 'stale_guide_revision', latestGuideRevision: 1 } } }
+      });
+      await expect(client.saveTestingGuideResults(id, { guideRevision: 1, items: [
+        { id: 'unknown', outcome: 'passed', note: 'Must not write' }
+      ] })).rejects.toMatchObject({
+        status: 422, response: { error: { code: 'unknown_test_items', details: { unknownItemIds: ['unknown'] } } }
+      });
+      expect(await client.listRunTestResults(id)).toEqual({ testResults: [] });
+
+      const empty = await client.saveTestingGuideResults(id, { guideRevision: 1, items: [] });
+      expect(empty.testResultId).toBeDefined();
+      const patch = { guideRevision: 1, items: [
+        { id: a!.id, outcome: 'passed' as const, note: 'Fast context only.' },
+        { id: b!.id, outcome: 'failed' as const, note: ' ' },
+        { id: c!.id, outcome: 'failed' as const, note: 'Actual failure.' },
+        { id: d!.id, outcome: 'failed' as const, note: 'Remove me.' }
+      ] };
+      const saved = await client.saveTestingGuideResults(id, patch);
+      expect(saved.testResultId).toBe(empty.testResultId);
+      await client.saveTestingGuideResults(id, patch);
+      const cleared = await client.saveTestingGuideResults(id, { guideRevision: 1, items: [{ id: d!.id, outcome: null, note: null }] });
+      expect(cleared.items).toEqual([...saved.items.slice(0, 3), { id: d!.id }]);
+      const [draft] = (await client.listRunTestResults(id)).testResults;
+      const reply = { kind: 'feedback', title: 'Separate reply', body: 'Extra issue.' } as const;
+
+      // This fires only once the first failed item has been linked (and the reply inserted).
+      raw.exec(`CREATE TRIGGER fault_after_first_link BEFORE INSERT ON feedback
+        WHEN EXISTS (SELECT 1 FROM test_results WHERE state = 'working' AND json_extract(items_json, '$[1].feedbackId') IS NOT NULL)
+        BEGIN SELECT RAISE(ABORT, 'test fault after first link'); END;`);
+      await expect(client.replyToRun(id, reply)).rejects.toMatchObject({ status: 500, response: { error: { code: 'internal_error' } } });
+      expect(await client.getTestingGuideResults(id)).toEqual(cleared);
+      expect((await client.listRunTestResults(id)).testResults).toEqual([draft]);
+      expect((await client.listRunFeedback(id)).feedback).toEqual([]);
+      expect((await client.getRun(id)).currentStep).toBe('implementation.human_review');
+      raw.exec('DROP TRIGGER fault_after_first_link');
+
+      const revised = await client.replyToRun(id, reply);
+      await waitForStep(app, id, 'implementation.human_review');
+      const feedback = (await client.listRunFeedback(id)).feedback;
+      expect(feedback).toHaveLength(3);
+      const first = feedback.find(item => item.title === b!.text);
+      const second = feedback.find(item => item.title === c!.text);
+      expect(first?.body).toBe(b!.expected === undefined ? b!.text : `${b!.text}\n\nExpected: ${b!.expected}`);
+      expect(second?.body).toBe('Actual failure.');
+      expect(feedback).toContainEqual(expect.objectContaining({ id: revised.classification.createdFeedbackId, title: reply.title }));
+      const history = (await client.listRunTestResults(id)).testResults;
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({ id: draft!.id, outcome: 'failed', state: 'final',
+        feedbackRefs: expect.arrayContaining([first!.id, second!.id, revised.classification.createdFeedbackId]),
+        items: [cleared.items[0], { ...cleared.items[1], feedbackId: first!.id },
+          { ...cleared.items[2], feedbackId: second!.id }, cleared.items[3]]
+      });
+      const revisedPrompt = prompts.find(prompt => prompt.includes('## Testing notes'));
+      const [required, notes] = revisedPrompt?.split('## Testing notes') ?? [];
+      expect(required).toContain(`${second!.id} [blocker] ${c!.text}: Actual failure.`);
+      expect(required).not.toContain('Fast context only.');
+      expect(notes).toContain(`"${a!.text}" (passed): "Fast context only."`);
+      expect(notes).not.toContain('Actual failure.');
+    } finally {
+      launchSpy.mockRestore();
+      db.close();
+    }
+  }, 30_000);
+
+  it.each(['rewind', 'fail', 'cancel'] as const)('discards only the draft on a committed %s exit', async exit => {
+    const { app, stateDir } = await startFakeServer();
+    const client = sdkFor(app);
+    const id = await startRunFromIssue(app, await createSecretAndProject(app), 4);
+    await waitForStep(app, id, 'implementation.human_review');
+    const { guideRevision, items } = await client.getTestingGuideResults(id);
+    const check = items[0]!.id;
+    await client.saveTestingGuideResults(id, { guideRevision, items: [{ id: check, outcome: 'passed', note: 'Carry me.' }] });
+    // Make a preceding final via a general-feedback-only send-back.
+    await client.createRunFeedback(id, { target: 'implementation', title: 'Retest', body: 'Please retest.' });
+    await expect(client.replyToRun(id, { kind: 'approve' })).rejects.toMatchObject({
+      status: 409, response: { error: { details: { code: 'feedback_gate_blocked' } } }
+    });
+    await client.replyToRun(id, { kind: 'request_changes' });
+    await waitForStep(app, id, 'implementation.human_review');
+    const seeded = await client.getTestingGuideResults(id);
+    const draft = await client.saveTestingGuideResults(id, { guideRevision: seeded.guideRevision,
+      items: [{ id: check, outcome: 'failed', note: 'Discard me.' }] });
+    const finals = (await client.listRunTestResults(id)).testResults.filter(result => result.state === 'final');
+    expect(finals).toHaveLength(1);
+    const op = (suffix: string, payload?: object) => app.inject({
+      url: `/v1/runs/${id}/${suffix}`, method: 'POST', headers: AUTH, ...(payload === undefined ? {} : { payload })
+    });
+    const rejected = await op('set-step', { step: 'implementation.human_review' });
+    expect(rejected.statusCode).toBe(400);
+    expect(await client.getTestingGuideResults(id)).toEqual(draft);
+
+    if (exit === 'rewind') {
+      await expect.poll(async () => (await op('set-step', { step: 'implementation.testing_guide' })).statusCode).toBe(200);
+    } else if (exit === 'cancel') {
+      expect((await op('cancel')).statusCode).toBe(200);
+      expect((await op('recover', {})).statusCode).toBe(409);
+    } else {
+      const db = createSqliteDatabase({ path: resolveFakeStatePaths(stateDir).databasePath });
+      try {
+        const { runs, runSteps } = createDrizzleDomainRepositories(db);
+        const orchestrator = new DefaultOrchestrator({
+          runs, runSteps, events: new InMemoryRunEventBus(), dispatchQueue: new RunDispatchQueue({ maxConcurrent: 1 }),
+          autoDispatch: false
+        });
+        await orchestrator.applyDirective({ tenant: FAKE_TENANT, runId: id, directive: 'fail', reason: 'Test failure' });
+        expect(await client.getTestingGuideResults(id)).toMatchObject({ state: 'final', guideRevision });
+        expect((await op('recover', { mode: 'resume' })).statusCode).toBe(200);
+      } finally {
+        db.close();
+      }
+    }
+    expect((await client.listRunTestResults(id)).testResults).toEqual(finals);
+    expect((await client.listRunFeedback(id)).feedback.map(item => item.title)).toEqual(['Retest']);
+    if (exit !== 'cancel') {
+      await waitForStep(app, id, 'implementation.human_review');
+      const view = await client.getTestingGuideResults(id);
+      expect(view.testResultId).toBeUndefined();
+      expect(view.items[0]).toEqual({ id: check, note: 'Carry me.', outcome: 'passed' });
+      const saved = await client.saveTestingGuideResults(id, { guideRevision: view.guideRevision, items: [] });
+      expect(saved.testResultId).not.toBe(draft.testResultId);
+    }
+  }, 30_000);
+
   it('stores complete revisions after implementation feedback, then reads the latest without a worktree', async () => {
     const { app, stateDir } = await startFakeServer();
     const client = sdkFor(app);
@@ -347,16 +526,33 @@ describe('testing guide fake-mode wiring without a listening socket', () => {
     const first = await client.getRunTestingGuide(id);
     expect(first.revision).toBe(1);
     expect(first.items.map(item => item.text[0])).toEqual(['A', 'B', 'C', 'D']);
-    const reply = await client.replyToRun(id, { kind: 'feedback', title: 'Try again', body: 'Check the fixture build again.' });
+    const [a, , c, d] = first.items;
+    const working = await client.saveTestingGuideResults(id, { guideRevision: 1, items: [
+      { id: a!.id, outcome: 'passed', note: 'Fast.' },
+      { id: c!.id, outcome: 'failed', note: 'Wrong output.' },
+      { id: d!.id, outcome: 'passed', note: 'Old check passed.' }
+    ] });
+    const general = await client.createRunFeedback(id, { target: 'implementation', title: 'Help text', body: 'A typo.' });
+    await expect(client.replyToRun(id, { kind: 'approve' })).rejects.toMatchObject({
+      status: 409, response: { error: { code: 'conflict', details: { code: 'failed_test_items', failedItemIds: [c!.id] } } }
+    });
+    expect(await client.getTestingGuideResults(id)).toEqual(working);
+    await client.replyToRun(id, { kind: 'request_changes' });
     await waitForStep(app, id, 'implementation.human_review');
     const next = await client.getRunTestingGuide(id);
     expect(next.revision).toBe(2);
     expect(next.items.slice(0, 3)).toEqual(first.items.slice(0, 3));
     expect(next.items.slice(3).map(item => item.text[0])).toEqual(['D', 'E']);
     expect(next.items.slice(3).every(item => !first.items.some(old => old.id === item.id))).toBe(true);
-    expect((await client.listRunFeedback(id)).feedback).toContainEqual(expect.objectContaining({
-      id: reply.classification.createdFeedbackId, status: 'addressed', target: 'implementation'
-    }));
+    const feedback = (await client.listRunFeedback(id)).feedback;
+    expect(feedback).toHaveLength(2);
+    const generated = feedback.find(item => item.title === c!.text);
+    expect(generated).toMatchObject({ target: 'implementation', body: 'Wrong output.', status: 'addressed' });
+    expect(feedback).toContainEqual(expect.objectContaining({ id: general.id, status: 'addressed', target: 'implementation' }));
+    expect(await client.getTestingGuideResults(id)).toEqual({
+      guideRevision: 2, state: 'working', outcome: 'passed',
+      items: next.items.map(({ id }) => id === a!.id ? { id, outcome: 'passed', note: 'Fast.' } : { id })
+    });
     const path = ['implementation.build', 'implementation.testing_guide', 'implementation.human_review'];
     const steps = (await client.listRunSteps(id)).steps;
     expect(steps.map(step => step.step).filter(step => path.includes(step))).toEqual([...path, ...path]);
@@ -364,6 +560,18 @@ describe('testing guide fake-mode wiring without a listening socket', () => {
     expect(sessions).toHaveLength(2);
     expect(sessions.every(session => session.role === 'implementer' && session.outcome === 'succeeded' && session.usageAvailable)).toBe(true);
     expect(await readLaunchCounter(resolveFakeStatePaths(stateDir))).toBe(8);
+
+    await client.replyToRun(id, { kind: 'approve' });
+    await waitForStep(app, id, 'pr.human_review');
+    const { testResults } = await client.listRunTestResults(id);
+    expect(testResults).toHaveLength(2);
+    const [failed, passed] = testResults;
+    expect(failed).toMatchObject({ id: working.testResultId, state: 'final', guideRevision: 1, outcome: 'failed' });
+    expect(failed!.feedbackRefs).toHaveLength(2);
+    expect(failed!.feedbackRefs).toEqual(expect.arrayContaining([general.id, generated!.id]));
+    expect(passed).toMatchObject({ state: 'final', guideRevision: 2, outcome: 'passed', feedbackRefs: [] });
+    expect(await client.getTestingGuideResults(id)).toMatchObject({ state: 'final', testResultId: passed!.id });
+    expect((await client.listRunFeedback(id)).feedback.every(item => item.status === 'resolved')).toBe(true);
 
     const paths = resolveFakeStatePaths(stateDir);
     const db = createSqliteDatabase({ path: paths.databasePath });

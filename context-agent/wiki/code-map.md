@@ -12,6 +12,31 @@ Last updated: 2026-11-27 (active dispatch cancellation, #154).
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
 
+## Implementation review test results (#164)
+
+- Result schemas and strict patches: `packages/api-contract/src/test-result.ts`. Policy, routes,
+  authorization and tenant lookup: `packages/core/src/{policy,routes,control-plane-service}.ts`.
+  Clients use `getTestingGuideResults`, `saveTestingGuideResults` and `listRunTestResults` in
+  `packages/sdk/src/client.ts`; OpenAPI lives in `packages/api-contract/src/openapi.ts`.
+- `packages/core/src/testing-guide-results.ts` derives the outcome, seeds by stable check ID, and
+  resolves the newest final against its recorded guide revision. The SDK never sees the gate ID.
+- `DefaultOrchestrator` pins the gate occurrence before waiting for the run mutation lock.
+  Its reply path is the only producer of the trusted decision payload; a directive alone cannot
+  finalize a pass. `DrizzleRunRepository.recordRunStepTransition` either commits all decision
+  effects or removes the closing occurrence's undecided draft. See
+  [review-pass commits](../decisions/testing-guide-pass-commits.md).
+- `packages/persistence/drizzle/0016_testing_guide_results.sql` extends `test_results`.
+  `DrizzleTestResultRepository` and `DrizzleTestingGuideRepository` (both in
+  `domain-repositories.ts`) own ordered history, occurrence-bound writes, and revision lookup.
+- The production context loader in `apps/control-plane/src/server.ts` reads only the most recent
+  final and its guide. `implementation-build-context.ts` renders unlinked non-failure notes to
+  implementers as context; the convergence engine still owns required feedback dispositions.
+- Verify with `pnpm nx test core -- testing-guide-results.spec.ts`, the persistence
+  `domain-migrations.spec.ts` and `domain-repositories.spec.ts`, and control-plane
+  `fake/fake-mode.integration.spec.ts` (includes fault injection and prompt capture) and
+  `fake/full-wiring.e2e.spec.ts` (production entrypoint and SDK over loopback).
+  [Concept diffs](testing-guide-results-concept-proposal.md) await `docs.human_review`.
+
 ## Testing guides after builds (#163)
 
 - `packages/core/src/run-step-catalog.ts` and `run-workflows.ts` put the implementer-only

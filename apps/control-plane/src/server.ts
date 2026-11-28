@@ -23,6 +23,8 @@ import type { ConfigurationRecord, Conversation, ExecutionContext, NonModelPrinc
 import {
   buildProviderAdapterKey,
   buildImplementationBuildContext,
+  loadLatestFinalTestingPass,
+  testingNotesForPass,
   buildPullRequestFinalizePrompt,
   publicationReviewSnapshotPrompt,
   redactReviewedEvidence,
@@ -1679,11 +1681,16 @@ export async function createControlPlaneServer(
             }
           }
 
+          const finalTestingPass = roleInput.role === 'implementer'
+            ? await loadLatestFinalTestingPass({ runId: workInput.runId, tenant: workInput.tenant },
+              domainRepos.testingGuides, domainRepos.testResults)
+            : null;
           implementationBuildContext = buildImplementationBuildContext({
             run: workInput.run,
             role: roleInput.role as 'implementer' | 'reviewer',
             round: roleInput.round,
             ...(approvedSpec !== undefined ? { approvedSpec } : {}),
+            ...(finalTestingPass === null ? {} : { testingNotes: testingNotesForPass(finalTestingPass) }),
             ...(roleInput.reviewContext !== undefined ? { reviewContext: roleInput.reviewContext } : {})
           });
         }
@@ -2079,6 +2086,7 @@ export async function createControlPlaneServer(
     resolveWorkspaceContext: options.resolveWorkspaceContext ?? internalResolveWorkspaceContext,
     runSteps: domainRepos.runSteps,
     testingGuides: domainRepos.testingGuides,
+    testResults: domainRepos.testResults,
     ...(convergenceEngine !== undefined ? { convergenceEngine } : {}),
     ...(options.autoDispatch !== undefined ? { autoDispatch: options.autoDispatch } : {}),
     ...(specFreezeDependencies !== undefined ? { specFreezeDependencies } : {}),
@@ -2197,6 +2205,7 @@ export async function createControlPlaneServer(
     policy,
     artifacts: domainRepos.artifacts,
     testingGuides: domainRepos.testingGuides,
+    testResults: domainRepos.testResults,
     feedback: domainRepos.feedback,
     runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
     workspaceFilesystem: nodeFilesystem,

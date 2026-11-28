@@ -1,5 +1,6 @@
-import type { TestingGuide } from '@autocatalyst/api-contract';
-import type { TestingGuideRepository } from './domain-repositories.js';
+import type { RunTestResultsResponse, SaveTestingGuideResultsRequest, TestingGuide, TestingGuideResults } from '@autocatalyst/api-contract';
+import { loadLatestFinalTestingPass, readWorkingTestingGuidePass, testingGuidePassView } from './testing-guide-results.js';
+import type { TestingGuideRepository, TestResultRepository } from './domain-repositories.js';
 import type { RepairActivityReader } from './pr-ci-repair.js';
 import { publicationRecoveryStep } from './pr-publication.js';
 import { priceRunSessions } from './session-pricing.js';
@@ -85,6 +86,7 @@ export type ControlPlaneServiceErrorCode =
   | 'unauthorized'
   | 'conflict'
   | 'invalid_transition'
+  | 'unknown_test_items'
   | 'invalid_feedback_anchor'
   | 'unsupported_pause'
   | typeof pullRequestCheckFailedErrorCode;
@@ -298,6 +300,9 @@ export interface ControlPlaneService {
   subscribeRunEvents(input: ServiceSubscribeRunEventsInput): Promise<RunEventSubscription>;
   replayRunEvents(input: ServiceReplayRunEventsInput): Promise<RunEventReplayResult>;
   tick(input: ServiceTickInput): Promise<ServiceTickResult>;
+  getTestingGuideResults(input: ServiceGetRunSpecInput): Promise<TestingGuideResults>;
+  saveTestingGuideResults(input: ServiceGetRunSpecInput & { readonly request: SaveTestingGuideResultsRequest }): Promise<TestingGuideResults>;
+  listRunTestResults(input: ServiceGetRunSpecInput): Promise<RunTestResultsResponse>;
   getRunTestingGuide(input: ServiceGetRunSpecInput): Promise<TestingGuide>;
   getRunSpec(input: ServiceGetRunSpecInput): Promise<ServiceGetRunSpecResult>;
   createRunFeedback(input: ServiceCreateRunFeedbackInput): Promise<ServiceCreateRunFeedbackResult>;
@@ -329,6 +334,7 @@ export interface DefaultControlPlaneServiceOptions {
   readonly policy: PolicyDecisionPoint;
   readonly artifacts: ArtifactRepository;
   readonly testingGuides?: TestingGuideRepository;
+  readonly testResults?: TestResultRepository;
   readonly feedback: FeedbackRepository;
   readonly runWorkspaceMetadata: RunWorkspaceMetadataRepository;
   readonly workspaceFilesystem: WorkspaceFileSystemPort;
@@ -418,6 +424,19 @@ function persistenceFailed(message: string, cause?: unknown): ControlPlaneServic
   return new ControlPlaneServiceError('persistence_failed', message, cause === undefined ? {} : { cause });
 }
 
+function mapImplementationGateMutationError(error: unknown, message: string): ControlPlaneServiceError {
+  if (error instanceof OrchestratorError) {
+    switch (error.code) {
+      case 'conflict':
+      case 'unknown_test_items':
+        return new ControlPlaneServiceError(error.code, error.message, { details: error.details, cause: error });
+      case 'missing_run':
+        return new ControlPlaneServiceError('not_found', error.message);
+    }
+  }
+  return persistenceFailed(message, error);
+}
+
 async function requireTenantRun(input: {
   readonly runs: RunRepository;
   readonly runId: string;
@@ -499,6 +518,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
   readonly #policy: PolicyDecisionPoint;
   readonly #artifacts: ArtifactRepository;
   readonly #testingGuides: TestingGuideRepository | undefined;
+  readonly #testResults: TestResultRepository | undefined;
   readonly #feedback: FeedbackRepository;
   readonly #runWorkspaceMetadata: RunWorkspaceMetadataRepository;
   readonly #workspaceFilesystem: WorkspaceFileSystemPort;
@@ -520,6 +540,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     this.#policy = options.policy;
     this.#artifacts = options.artifacts;
     this.#testingGuides = options.testingGuides;
+    this.#testResults = options.testResults;
     this.#feedback = options.feedback;
     this.#runWorkspaceMetadata = options.runWorkspaceMetadata;
     this.#workspaceFilesystem = options.workspaceFilesystem;
@@ -846,6 +867,65 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     return { id, runId, revision, instructions, items, createdAt };
   }
 
+  async #authorizeTestingGuideResults(input: ServiceGetRunSpecInput, action: 'read' | 'write'): Promise<void> {
+    const decision = await this.#policy.authorize({
+      principal: input.principal, action: `run_testing_guide_results.${action}`,
+      resource: { kind: 'run_testing_guide_results', id: input.runId, path: '/v1/runs/:id/testing-guide/results' }
+    });
+    if (!decision.allowed) throw new ControlPlaneServiceError('forbidden', 'Not authorized to access testing guide results.');
+  }
+
+  async getTestingGuideResults(input: ServiceGetRunSpecInput): Promise<TestingGuideResults> {
+    await this.#authorizeTestingGuideResults(input, 'read');
+    const run = await requireTenantRun({ runs: this.#runs, runId: input.runId, tenant: input.tenant });
+    const guides = this.#testingGuides;
+    const results = this.#testResults;
+    if (!guides || !results) throw persistenceFailed('Testing results are unavailable.');
+    const scope = { runId: run.id, tenant: run.tenant };
+    try {
+      if (run.currentStep === 'implementation.human_review') {
+        const guide = await guides.findLatestByRun(scope);
+        if (guide === null) throw new ControlPlaneServiceError('not_found', 'Testing guide not found.');
+        const gate = await this.#runs.findLatestOpenRunStep?.({ runId: run.id, step: run.currentStep });
+        if (!gate) throw new ControlPlaneServiceError('conflict', 'The implementation review occurrence changed.');
+        return await readWorkingTestingGuidePass(guide, gate.id, run.tenant, guides, results);
+      }
+      const final = await loadLatestFinalTestingPass(scope, guides, results);
+      if (final === null) throw new ControlPlaneServiceError('not_found', 'No test result is recorded for this run.');
+      return testingGuidePassView(final.guide, final.result);
+    } catch (error) {
+      if (error instanceof ControlPlaneServiceError) throw error;
+      throw persistenceFailed('Failed to load testing results.', error);
+    }
+  }
+
+  async saveTestingGuideResults(input: ServiceGetRunSpecInput & { readonly request: SaveTestingGuideResultsRequest }): Promise<TestingGuideResults> {
+    await this.#authorizeTestingGuideResults(input, 'write');
+    const principal = requireNonModelPrincipal(input.principal, 'Model principals cannot save testing results.');
+    const run = await requireTenantRun({ runs: this.#runs, runId: input.runId, tenant: input.tenant });
+    try {
+      if (!this.#orchestrator.saveTestingGuideResults) throw persistenceFailed('Testing results are unavailable.');
+      return await this.#orchestrator.saveTestingGuideResults({ ...input, runId: run.id, principal });
+    } catch (error) {
+      throw mapImplementationGateMutationError(error, 'Failed to save testing results.');
+    }
+  }
+
+  async listRunTestResults(input: ServiceGetRunSpecInput): Promise<RunTestResultsResponse> {
+    const decision = await this.#policy.authorize({
+      principal: input.principal, action: 'run_test_results.list',
+      resource: { kind: 'run_test_results', id: input.runId, path: '/v1/runs/:id/test-results' }
+    });
+    if (!decision.allowed) throw new ControlPlaneServiceError('forbidden', 'Not authorized to list test results.');
+    const run = await requireTenantRun({ runs: this.#runs, runId: input.runId, tenant: input.tenant });
+    try {
+      if (!this.#testResults) throw persistenceFailed('Testing results are unavailable.');
+      return { testResults: [...await this.#testResults.listByRun(run.id)] };
+    } catch (error) {
+      throw persistenceFailed('Failed to list run test results.', error);
+    }
+  }
+
   async getRunSpec(input: ServiceGetRunSpecInput): Promise<ServiceGetRunSpecResult> {
     const decision = await this.#policy.authorize({
       principal: input.principal,
@@ -955,7 +1035,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
    * artifact surfaces as the same 404 as `GET /v1/runs/:id/spec`; an unreadable spec file is the
    * existing persistence failure.
    */
-  async #validateSpecAnchorIfPresent(run: Run, anchor: CreateRunFeedbackRequest['anchor']): Promise<void> {
+  async #validateSpecAnchorIfPresent(run: Run, anchor: Feedback['anchor']): Promise<void> {
     if (anchor === undefined) return;
     const { artifact, markdown } = await this.#readCurrentSpec(run);
     try {
@@ -988,6 +1068,17 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     }
     if (run.tenant !== input.tenant) {
       throw new ControlPlaneServiceError('not_found', 'Run not accessible.');
+    }
+
+    if (input.request.target === 'implementation') {
+      try {
+        if (!this.#orchestrator.createImplementationFeedback) throw persistenceFailed('Implementation feedback is unavailable.');
+        return await this.#orchestrator.createImplementationFeedback({
+          runId: run.id, tenant: run.tenant, principal: author, title: input.request.title, body: input.request.body
+        });
+      } catch (error) {
+        throw mapImplementationGateMutationError(error, 'Failed to create implementation feedback.');
+      }
     }
 
     // A present spec anchor is validated against the current spec before any item is created. An
@@ -1361,7 +1452,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
         }
         if (error.code === 'invalid_transition') {
           const details = error.details as { code?: unknown } | null;
-          if (details !== null && typeof details === 'object' && (details.code === 'feedback_gate_blocked' || details.code === 'request_changes_conflict' || details.code === 'stale_pause')) {
+          if (details !== null && typeof details === 'object' && (details.code === 'feedback_gate_blocked' || details.code === 'failed_test_items' || details.code === 'request_changes_conflict' || details.code === 'stale_pause')) {
             throw new ControlPlaneServiceError('conflict', error.message, { details: error.details, cause: error });
           }
           throw new ControlPlaneServiceError('invalid_transition', error.message, { details: error.details, cause: error });

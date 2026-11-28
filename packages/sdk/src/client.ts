@@ -1,3 +1,7 @@
+import {
+  runTestingGuideResultsPath, runTestResultsPath, runTestResultsResponseSchema, saveTestingGuideResultsRequestSchema,
+  testingGuideResultsSchema, type RunTestResultsResponse, type SaveTestingGuideResultsRequest, type TestingGuideResults
+} from '@autocatalyst/api-contract';
 import { runTestingGuidePath, testingGuideSchema, type TestingGuide } from '@autocatalyst/api-contract';
 import {
   configurationRecordCollectionPath,
@@ -177,6 +181,9 @@ export interface ControlPlaneClient {
    * tokens or cost.tokens, for disjoint counts: compatibility zeros may be placeholders. */
   listRunSessions(id: string): Promise<RunSessionListResponse>;
   subscribeRunEvents(id: string, options?: RunEventsStreamOptions): Promise<RunEventsResponse>;
+  getTestingGuideResults(id: string): Promise<TestingGuideResults>;
+  saveTestingGuideResults(id: string, request: SaveTestingGuideResultsRequest): Promise<TestingGuideResults>;
+  listRunTestResults(id: string): Promise<RunTestResultsResponse>;
   getRunTestingGuide(id: string): Promise<TestingGuide>;
   getRunSpec(id: string): Promise<RunSpecResponse>;
   createRunFeedback(id: string, request: CreateRunFeedbackRequest): Promise<Feedback>;
@@ -597,6 +604,33 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         throw new ControlPlaneClientError(response.status, parsed);
       }
       return { kind: 'response' as const, response };
+    },
+
+    async getTestingGuideResults(id) {
+      const response = await fetchImplementation(urlFor(baseUrl, runTestingGuideResultsPath.replace(':id', encodeURIComponent(id))),
+        { method: 'GET', headers: protectedHeaders(bearerToken) });
+      await throwForError(response);
+      if (response.status !== 200) throw new Error(`Expected 200 from getTestingGuideResults, received ${response.status}.`);
+      return testingGuideResultsSchema.parse(await parseJson(response));
+    },
+
+    async saveTestingGuideResults(id, request) {
+      const body = saveTestingGuideResultsRequestSchema.parse(request);
+      const response = await fetchImplementation(urlFor(baseUrl, runTestingGuideResultsPath.replace(':id', encodeURIComponent(id))), {
+        method: 'PUT', headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
+        body: JSON.stringify(body)
+      });
+      await throwForError(response);
+      if (response.status !== 200) throw new Error(`Expected 200 from saveTestingGuideResults, received ${response.status}.`);
+      return testingGuideResultsSchema.parse(await parseJson(response));
+    },
+
+    async listRunTestResults(id) {
+      const response = await fetchImplementation(urlFor(baseUrl, runTestResultsPath.replace(':id', encodeURIComponent(id))),
+        { method: 'GET', headers: protectedHeaders(bearerToken) });
+      await throwForError(response);
+      if (response.status !== 200) throw new Error(`Expected 200 from listRunTestResults, received ${response.status}.`);
+      return runTestResultsResponseSchema.parse(await parseJson(response));
     },
 
     async getRunTestingGuide(id) {

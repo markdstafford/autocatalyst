@@ -1,3 +1,7 @@
+import {
+  runTestingGuideResultsPath, runTestResultsPath, runTestResultsResponseSchema,
+  saveTestingGuideResultsRequestSchema, testingGuideResultsSchema
+} from './test-result.js';
 import { runTestingGuidePath, testingGuideSchema } from './testing-guide.js';
 import {
   OpenAPIRegistry,
@@ -191,6 +195,9 @@ export function generateOpenApiDocument(): OpenApiDocument {
   registry.register('RunStateTransitionEvent', runStateTransitionEventSchema);
   const RunIdParams = registry.register('RunIdParams', runIdParamsSchema);
   const RunStepListResponse = registry.register('RunStepListResponse', runStepListResponseSchema);
+  const TestingGuideResults = registry.register('TestingGuideResults', testingGuideResultsSchema);
+  const SaveTestingGuideResultsRequest = registry.register('SaveTestingGuideResultsRequest', saveTestingGuideResultsRequestSchema);
+  const RunTestResultsResponse = registry.register('RunTestResultsResponse', runTestResultsResponseSchema);
   const TestingGuide = registry.register('TestingGuide', testingGuideSchema);
   const RunSpecResponse = registry.register('RunSpecResponse', runSpecResponseSchema);
   const CreateRunFeedbackRequest = registry.register('CreateRunFeedbackRequest', createRunFeedbackRequestSchema);
@@ -620,16 +627,67 @@ export function generateOpenApiDocument(): OpenApiDocument {
     }
   });
 
+  const testingResultsErrors = {
+    400: jsonResponse(ErrorResponse, 'Validation error.'),
+    401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+    403: jsonResponse(ErrorResponse, 'Forbidden.'),
+    500: jsonResponse(ErrorResponse, 'Internal server error.')
+  };
+
+  registry.registerPath({
+    method: 'get',
+    path: runTestingGuideResultsPath.replace(':id', '{id}'),
+    tags: ['runs'],
+    request: { params: RunIdParams },
+    responses: {
+      ...testingResultsErrors,
+      200: jsonResponse(TestingGuideResults, 'Current working or seeded pass at implementation review; latest final pass elsewhere.'),
+      404: jsonResponse(ErrorResponse, 'Run, testing guide, or guide-backed final result not found.'),
+      409: jsonResponse(ErrorResponse, 'The implementation review occurrence changed.')
+    }
+  });
+
+  registry.registerPath({
+    method: 'put',
+    path: runTestingGuideResultsPath.replace(':id', '{id}'),
+    tags: ['runs'],
+    description: 'Replace the mark and note for each named item. Use null to clear a field. Item IDs must be distinct.',
+    request: {
+      params: RunIdParams,
+      body: { content: { 'application/json': { schema: SaveTestingGuideResultsRequest } } }
+    },
+    responses: {
+      ...testingResultsErrors,
+      200: jsonResponse(TestingGuideResults, 'Saved working pass, in guide order.'),
+      404: jsonResponse(ErrorResponse, 'Run or testing guide not found.'),
+      409: jsonResponse(ErrorResponse, 'Outside implementation review, occurrence changed, or stale revision. Stale revision details: { code: "stale_guide_revision", latestGuideRevision }.'),
+      422: jsonResponse(ErrorResponse, 'unknown_test_items. Details: { unknownItemIds }.')
+    }
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: runTestResultsPath.replace(':id', '{id}'),
+    tags: ['runs'],
+    request: { params: RunIdParams },
+    responses: {
+      ...testingResultsErrors,
+      200: jsonResponse(RunTestResultsResponse, 'Legacy results, then final passes in occurrence order, then the working pass if present.'),
+      404: jsonResponse(ErrorResponse, 'Run not found.')
+    }
+  });
+
   // POST /v1/runs/{id}/feedback
   registry.registerPath({
     method: 'post',
     path: runFeedbackPath.replace(':id', '{id}') as '/v1/runs/{id}/feedback',
     tags: ['runs'],
-    summary: 'Create artifact (spec) feedback',
+    summary: 'Create artifact or implementation feedback',
     description:
       'Creates spec feedback. The anchor is optional: omit it for target-level comments. A present ' +
       'spec anchor must be an artifact_range for the current spec artifact whose code-point offsets ' +
-      'reproduce its quotedText exactly, or the request is rejected with 422 invalid_feedback_anchor.',
+      'reproduce its quotedText exactly, or the request is rejected with 422 invalid_feedback_anchor. ' +
+      'Use target implementation with title and body and no anchor to raise feedback without leaving implementation review.',
     request: {
       params: RunIdParams,
       body: { content: { 'application/json': { schema: CreateRunFeedbackRequest } } }
@@ -638,7 +696,9 @@ export function generateOpenApiDocument(): OpenApiDocument {
       [createRunFeedbackSuccessStatusCode]: jsonResponse(Feedback, 'Created feedback item.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       400: jsonResponse(ErrorResponse, 'Validation error.'),
-      404: jsonResponse(ErrorResponse, 'Run has no spec artifact for its work kind.'),
+      403: jsonResponse(ErrorResponse, 'Forbidden.'),
+      404: jsonResponse(ErrorResponse, 'Run not found or run has no spec artifact for its work kind.'),
+      409: jsonResponse(ErrorResponse, 'Implementation feedback requires the active implementation review occurrence.'),
       422: jsonResponse(ErrorResponse, 'invalid_feedback_anchor. details.reason is one of wrong_kind, wrong_artifact, out_of_range, missing_quoted_text, text_mismatch.')
     }
   });
@@ -709,7 +769,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
     description:
       'Accepts a structured human reply for supported human-waiting run steps. Reply kinds: approve, ' +
       'feedback (optional anchor; a present spec anchor must reproduce its quotedText), guidance, and ' +
-      'request_changes (operates over existing open spec feedback; classified as a revise directive ' +
+      'request_changes (requires open feedback or, at implementation review, a failed check; classified as a revise directive ' +
       'with no createdFeedbackId). After set-step abandons an implementation input pause, ' +
       'refresh and supply the current pauseStepId with implementation guidance. ' +
       'A stale or missing required occurrence ID returns 409 (stale_pause).',
@@ -728,7 +788,8 @@ export function generateOpenApiDocument(): OpenApiDocument {
       400: jsonResponse(ErrorResponse, 'Malformed request or invalid reply for the supported pause.'),
       403: jsonResponse(ErrorResponse, 'Unauthorized principal or model principal.'),
       404: jsonResponse(ErrorResponse, 'Run not found.'),
-      409: jsonResponse(ErrorResponse, 'Run is terminal, not waiting on a human, blocked by feedback, changed step, or unsupported pause.'),
+      409: jsonResponse(ErrorResponse, 'Run is terminal, not waiting on a human, blocked by feedback, changed step, or unsupported pause. Failed test approval details: { code: "failed_test_items", failedItemIds }.'),
+      422: jsonResponse(ErrorResponse, 'invalid_feedback_anchor for a spec feedback reply.'),
       500: jsonResponse(ErrorResponse, 'Unexpected internal failure.')
     }
   });

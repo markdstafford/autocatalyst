@@ -1,3 +1,7 @@
+import {
+  runTestingGuideResultsPath, runTestResultsPath, runTestResultsResponseSchema, saveTestingGuideResultsRequestSchema,
+  testingGuideResultsSchema, type SaveTestingGuideResultsRequest
+} from '@autocatalyst/api-contract';
 import { runTestingGuidePath, testingGuideSchema } from '@autocatalyst/api-contract';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { emptyRunActionRequestSchema, setRunStepRequestSchema, renameRunRequestSchema, runActionResponseSchema,
@@ -273,8 +277,9 @@ async function handleControlPlaneServiceError(
     case 'invalid_transition':
       await reply.status(400).send(errorResponse('invalid_transition', error.message, error.details));
       return;
+    case 'unknown_test_items':
     case 'invalid_feedback_anchor':
-      await reply.status(422).send(errorResponse('invalid_feedback_anchor', error.message, error.details));
+      await reply.status(422).send(errorResponse(error.code, error.message, error.details));
       return;
     case 'unsupported_pause':
       await reply.status(409).send(errorResponse('unsupported_pause', error.message, error.details));
@@ -1019,7 +1024,48 @@ export async function registerControlPlaneRoutes(
       }
     });
 
-    // Spec review: POST /v1/runs/:id/feedback
+    for (const operation of [
+      { method: 'GET', action: 'run_testing_guide_results.read', resource: { kind: 'run_testing_guide_results', path: runTestingGuideResultsPath } },
+      { method: 'PUT', action: 'run_testing_guide_results.write', resource: { kind: 'run_testing_guide_results', path: runTestingGuideResultsPath } },
+      { method: 'GET', action: 'run_test_results.list', resource: { kind: 'run_test_results', path: runTestResultsPath } }
+    ] as const) {
+      protectedApp.route({
+        method: operation.method,
+        url: operation.resource.path,
+        preHandler: authorizePreHandler(dependencies.policy, operation.action, (request) => ({
+          ...operation.resource, id: (request.params as { id: string }).id
+        })),
+        handler: async (request, reply) => {
+          let params: RunIdParams;
+          let body: SaveTestingGuideResultsRequest | undefined;
+          try {
+            params = runIdParamsSchema.parse(request.params);
+            if (operation.method === 'PUT') body = saveTestingGuideResultsRequestSchema.parse(request.body);
+          } catch (error) {
+            await sendValidationError(reply, error);
+            return;
+          }
+          const principal = requirePrincipalFromRequest(request);
+          const scope = { principal, tenant: principal.tenantId, runId: params.id };
+          try {
+            if (operation.resource.path === runTestResultsPath) {
+              const result = await dependencies.controlPlane.listRunTestResults(scope);
+              await reply.status(200).send(runTestResultsResponseSchema.parse(result));
+            } else {
+              const result = body === undefined
+                ? await dependencies.controlPlane.getTestingGuideResults(scope)
+                : await dependencies.controlPlane.saveTestingGuideResults({ ...scope, request: body });
+              await reply.status(200).send(testingGuideResultsSchema.parse(result));
+            }
+          } catch (error) {
+            if (!(error instanceof ControlPlaneServiceError)) throw error;
+            await handleControlPlaneServiceError(request, reply, error);
+          }
+        }
+      });
+    }
+
+    // Review feedback: POST /v1/runs/:id/feedback
     protectedApp.post(runFeedbackPath, {
       preHandler: authorizePreHandler(dependencies.policy, 'run_feedback.create', (request) => ({
         kind: 'run_feedback' as const,
@@ -1086,7 +1132,7 @@ export async function registerControlPlaneRoutes(
       }
     });
 
-    // Spec review: POST /v1/runs/:id/feedback/:feedbackId/thread
+    // Review feedback: POST /v1/runs/:id/feedback/:feedbackId/thread
     protectedApp.post(runFeedbackThreadPath, {
       preHandler: authorizePreHandler(dependencies.policy, 'run_feedback.thread.append', (request) => ({
         kind: 'run_feedback_thread' as const,

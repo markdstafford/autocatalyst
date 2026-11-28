@@ -33,6 +33,7 @@ import type {
   ModelRateRecord,
   TestingGuide,
   TestResult,
+  TestResultItem,
   Topic
 } from '@autocatalyst/api-contract';
 
@@ -113,6 +114,38 @@ export interface RunReadContext {
   readonly title?: string;
 }
 
+export interface WriteTestingGuidePassInput {
+  readonly runId: string;
+  readonly tenant: string;
+  readonly gateStepId: string;
+  readonly guideRevision: number;
+  readonly tester: TestResult['tester'];
+  readonly items: readonly TestResultItem[];
+}
+
+export type FinalizeTestingGuidePassInput = WriteTestingGuidePassInput & { readonly feedbackRefs: readonly string[] };
+
+type DecisionFeedback = { readonly id: string; readonly input: CreateFeedbackInput };
+
+export type TestingGuidePassDecision = {
+  readonly pass: WriteTestingGuidePassInput;
+  readonly workingResultId?: string;
+} & (
+  | { readonly action: 'approve' }
+  | {
+      readonly action: 'revise';
+      readonly replyFeedback?: DecisionFeedback;
+      readonly failures: readonly (DecisionFeedback & { readonly itemId: string })[];
+    }
+);
+
+export class TestingGuidePassConflictError extends Error {
+  constructor(readonly latestGuideRevision?: number) {
+    super(latestGuideRevision === undefined ? 'The implementation review occurrence changed.' : 'The testing guide revision changed.');
+    this.name = 'TestingGuidePassConflictError';
+  }
+}
+
 export interface RecordRunStepTransitionInput {
   readonly expectedStep: string;
   readonly abandonInput?: boolean;
@@ -121,6 +154,7 @@ export interface RecordRunStepTransitionInput {
   readonly terminal: boolean;
   readonly runStep: LifecycleRunStepInput;
   readonly sourceRunStepId?: string;
+  readonly testingGuideDecision?: TestingGuidePassDecision;
   /** Final checkpoint for the occurrence being closed. */
   readonly checkpointResult?: JsonValue;
   /** Initial checkpoint for the occurrence being opened in the same transition. */
@@ -346,6 +380,7 @@ export type StoredTestingGuide = TestingGuide & { readonly runStepId: string };
 export interface TestingGuideRepository {
   create(input: StoredTestingGuide & { readonly tenant: string }): Promise<StoredTestingGuide>;
   findLatestByRun(input: { readonly runId: string; readonly tenant: string }): Promise<StoredTestingGuide | null>;
+  findByRunAndRevision(input: { readonly runId: string; readonly tenant: string; readonly revision: number }): Promise<StoredTestingGuide | null>;
 }
 
 export interface SessionRepository {
@@ -359,6 +394,10 @@ export interface SessionRepository {
 }
 
 export interface TestResultRepository {
+  findLatestFinalByRun(runId: string): Promise<TestResult | null>;
+  findWorkingByRun(runId: string): Promise<(TestResult & { readonly gateStepId: string }) | null>;
+  saveWorking(input: WriteTestingGuidePassInput): Promise<TestResult>;
+  finalize(input: FinalizeTestingGuidePassInput): Promise<TestResult>;
   create(input: CreateTestResultInput): Promise<TestResult>;
   findById(id: string): Promise<TestResult | null>;
   listByRun(runId: string): Promise<readonly TestResult[]>;

@@ -19,10 +19,10 @@ describe('domain schema migrations', () => {
       ));
       expect(tables).toEqual(['artifacts', 'conversations', 'feedback', 'messages', 'projects', 'publications', 'pull_requests', 'run_steps', 'runs', 'sessions', 'test_results', 'testing_guides', 'topics']);
 
-      const indexes = names(internal.client.prepare("select name from sqlite_master where type = 'index' and name in (?, ?, ?, ?, ?)").all(
-        'runs_one_active_per_topic', 'topics_one_main_per_conversation', 'pull_requests_one_per_run', 'testing_guides_run_revision_idx', 'testing_guides_run_step_idx'
+      const indexes = names(internal.client.prepare("select name from sqlite_master where type = 'index' and name in (?, ?, ?, ?, ?, ?, ?)").all(
+        'runs_one_active_per_topic', 'topics_one_main_per_conversation', 'pull_requests_one_per_run', 'testing_guides_run_revision_idx', 'testing_guides_run_step_idx', 'test_results_gate_step_idx', 'test_results_working_run_idx'
       ));
-      expect(indexes).toEqual(['pull_requests_one_per_run', 'runs_one_active_per_topic', 'testing_guides_run_revision_idx', 'testing_guides_run_step_idx', 'topics_one_main_per_conversation']);
+      expect(indexes).toEqual(['pull_requests_one_per_run', 'runs_one_active_per_topic', 'test_results_gate_step_idx', 'test_results_working_run_idx', 'testing_guides_run_revision_idx', 'testing_guides_run_step_idx', 'topics_one_main_per_conversation']);
 
       database.close();
     });
@@ -103,6 +103,12 @@ describe('domain schema migrations', () => {
           state text NOT NULL, branch text NOT NULL, created_at text NOT NULL, updated_at text NOT NULL
         );
         CREATE TABLE run_steps (id text PRIMARY KEY NOT NULL, run_id text NOT NULL);
+        CREATE TABLE test_results (
+          id text PRIMARY KEY NOT NULL, run_id text NOT NULL, tester_json text NOT NULL,
+          outcome text NOT NULL, evidence_json text, feedback_refs_json text NOT NULL,
+          created_at text NOT NULL, updated_at text NOT NULL
+        );
+        INSERT INTO test_results VALUES ('legacy', 'run_seq', '{}', 'blocked', '{"link":"evidence"}', '["fb_old"]', 'time', 'time');
         CREATE TABLE run_workspace_metadata (
           run_id text PRIMARY KEY NOT NULL REFERENCES runs(id), workspace_handle text NOT NULL,
           workspace_repo_root text NOT NULL, created_at text NOT NULL, provisioned_base_ref text
@@ -143,6 +149,9 @@ describe('domain schema migrations', () => {
         expect(internal.client.prepare('SELECT id, current_step FROM runs').all())
           .toEqual([{ id: 'run_seq', current_step: 'spec.author' }]);
         expect(internal.client.prepare('SELECT count(*) AS n FROM testing_guides').get()).toEqual({ n: 0 });
+        expect(internal.client.prepare('SELECT outcome, evidence_json, feedback_refs_json, guide_revision, state, items_json, gate_step_id FROM test_results').get())
+          .toEqual({ outcome: 'blocked', evidence_json: '{"link":"evidence"}', feedback_refs_json: '["fb_old"]',
+            guide_revision: null, state: 'final', items_json: '[]', gate_step_id: null });
         const rows = internal.client.prepare('SELECT id, sequence FROM sessions ORDER BY sequence').all() as Array<{ id: string; sequence: number }>;
         expect(rows).toEqual([
           { id: 'sess_a', sequence: 1 },

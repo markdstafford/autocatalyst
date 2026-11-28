@@ -231,19 +231,55 @@ describe('production entrypoint fake-mode wiring (spawned child process)', () =>
     const first = await client.getRunTestingGuide(runId);
     expect(first.revision).toBe(1);
     expect(first.items.map(item => item.text[0])).toEqual(['A', 'B', 'C', 'D']);
-    const feedback = await client.replyToRun(runId, { kind: 'feedback', title: 'Try again', body: 'Rerun the build.' });
+    const [a, , c, d] = first.items;
+    expect(await client.getTestingGuideResults(runId)).toEqual({
+      guideRevision: 1, state: 'working', outcome: 'inconclusive', items: first.items.map(({ id }) => ({ id }))
+    });
+    expect(await client.listRunTestResults(runId)).toEqual({ testResults: [] });
+    const working = await client.saveTestingGuideResults(runId, { guideRevision: 1, items: [
+      { id: a!.id, outcome: 'passed', note: 'Fast.' },
+      { id: c!.id, outcome: 'failed', note: 'Lowercase output.' },
+      { id: d!.id, outcome: 'passed', note: 'Original D worked.' }
+    ] });
+    const general = await client.createRunFeedback(runId, {
+      target: 'implementation', title: 'Help text', body: 'The help text has a typo.'
+    });
+    expect((await client.getRun(runId)).currentStep).toBe('implementation.human_review');
+    await expect(client.replyToRun(runId, { kind: 'approve' })).rejects.toMatchObject({
+      status: 409, response: { error: { code: 'conflict', details: { code: 'failed_test_items', failedItemIds: [c!.id] } } }
+    });
+    expect(await client.getTestingGuideResults(runId)).toEqual(working);
+    await client.replyToRun(runId, { kind: 'request_changes' });
     await waitForStep(client, runId, 'implementation.human_review');
     const second = await client.getRunTestingGuide(runId);
     expect(second.revision).toBe(2);
     expect(second.items.slice(0, 3)).toEqual(first.items.slice(0, 3));
     expect(second.items.map(item => item.text[0])).toEqual(['A', 'B', 'C', 'D', 'E']);
     expect(second.items.slice(3).every(item => !first.items.some(old => old.id === item.id))).toBe(true);
-    expect((await client.listRunFeedback(runId)).feedback).toContainEqual(expect.objectContaining({
-      id: feedback.classification.createdFeedbackId, status: 'addressed', target: 'implementation'
-    }));
+    const seededSecondPass = await client.getTestingGuideResults(runId);
+    expect(seededSecondPass).toEqual({
+      guideRevision: 2, state: 'working', outcome: 'passed',
+      items: second.items.map(({ id }) => id === a!.id ? { id, outcome: 'passed', note: 'Fast.' } : { id })
+    });
+    const feedback = (await client.listRunFeedback(runId)).feedback.filter(item => item.target === 'implementation');
+    expect(feedback).toHaveLength(2);
+    const generated = feedback.find(item => item.title === c!.text);
+    expect(generated).toMatchObject({ status: 'addressed', body: 'Lowercase output.' });
+    expect(feedback).toContainEqual(expect.objectContaining({ id: general.id, status: 'addressed' }));
     await expectGuideHistory(client, runId, 2);
     await client.replyToRun(runId, { kind: 'approve', body: 'Approved implementation.' });
     await waitForStep(client, runId, 'pr.human_review');
+    const { testResults } = await client.listRunTestResults(runId);
+    expect(testResults).toHaveLength(2);
+    const [failed, passed] = testResults;
+    expect(failed).toMatchObject({ id: working.testResultId, state: 'final', guideRevision: 1, outcome: 'failed' });
+    expect(failed!.feedbackRefs).toHaveLength(2);
+    expect(failed!.feedbackRefs).toEqual(expect.arrayContaining([general.id, generated!.id]));
+    expect(failed!.items.find(item => item.id === c!.id)?.feedbackId).toBe(generated!.id);
+    expect(passed).toMatchObject({ state: 'final', guideRevision: 2, outcome: 'passed', feedbackRefs: [] });
+    expect(await client.getTestingGuideResults(runId)).toMatchObject({ state: 'final', testResultId: passed!.id });
+    expect((await client.listRunFeedback(runId)).feedback.filter(item => item.target === 'implementation')
+      .every(item => item.status === 'resolved')).toBe(true);
 
     // Flip the PR state file to merged and reconcile; the run reaches done.
     const { pullRequest } = await client.getRunPullRequest(runId);
