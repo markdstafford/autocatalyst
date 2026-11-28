@@ -660,7 +660,7 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
     async createRunFeedback(id, request) {
       const body = createRunFeedbackRequestSchema.parse(request);
       const response = await fetchImplementation(
-        urlFor(baseUrl, runFeedbackPath.replace(':id', id)),
+        urlFor(baseUrl, runFeedbackPath.replace(':id', encodeURIComponent(id))),
         {
           method: 'POST',
           headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),

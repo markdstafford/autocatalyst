@@ -17,7 +17,9 @@ Last updated: 2026-11-27 (active dispatch cancellation, #154).
 - Result schemas and strict patches: `packages/api-contract/src/test-result.ts`. Policy, routes,
   authorization and tenant lookup: `packages/core/src/{policy,routes,control-plane-service}.ts`.
   Clients use `getTestingGuideResults`, `saveTestingGuideResults` and `listRunTestResults` in
-  `packages/sdk/src/client.ts`; OpenAPI lives in `packages/api-contract/src/openapi.ts`.
+  `packages/sdk/src/client.ts`. The result methods and `createRunFeedback` encode the run ID as a
+  path segment; `packages/sdk/src/client.spec.ts` covers their transport and shared schema parsing.
+  OpenAPI lives in `packages/api-contract/src/openapi.ts`.
 - `packages/core/src/testing-guide-results.ts` derives the outcome, seeds by stable check ID, and
   resolves the newest final against its recorded guide revision. The SDK never sees the gate ID.
 - `DefaultOrchestrator` pins the gate occurrence before waiting for the run mutation lock.
