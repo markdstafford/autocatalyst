@@ -152,3 +152,4 @@ export type { ModelRateRecord } from './configuration-record.js';
 export * from './run-operator-actions.js';
 
 export * from './run-system-activity.js';
+export * from './testing-guide.js';

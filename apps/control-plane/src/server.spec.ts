@@ -650,6 +650,17 @@ describe('createDelegatingExecutionEntryPoint — role routing', () => {
     };
   }
 
+  it.each(['feature', 'enhancement', 'bug', 'chore'])('selects the guide scratch contract for %s', workKind => {
+    const base = makeMinimalContext('implementer');
+    const config = resolveScratchResultValidationConfig({
+      ...base, run: { ...base.run, currentStep: 'implementation.testing_guide', workKind }
+    });
+    expect(config).toMatchObject({ mode: 'scratch_file', step: 'implementation.testing_guide',
+      schemaId: 'autocatalyst.testing_guide.v1', resultFile: 'testing-guide-result.json' });
+    const registry = createControlPlaneStepResultContractRegistry();
+    expect(registry.resolve({ step: 'implementation.testing_guide', schemaId: config.schemaId })).toMatchObject({ status: 'resolved' });
+  });
+
   it('passes role from task.inputs to factory, overriding resolveRole callback', async () => {
     const capturedInputs: AgentRunnerFactoryInput[] = [];
     const factory: AgentRunnerFactory = {

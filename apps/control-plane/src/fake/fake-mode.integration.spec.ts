@@ -1,16 +1,23 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { FastifyInstance } from 'fastify';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createDrizzleDomainRepositories, createSqliteDatabase } from '@autocatalyst/persistence';
+import { createDrizzleDomainRepositories, createSqliteDatabase, DrizzleRunRepository } from '@autocatalyst/persistence';
 
 import { readControlPlaneAppConfig } from '../config.js';
-import { createControlPlaneServer } from '../server.js';
+import { createControlPlaneServer, type ControlPlaneServerOptions } from '../server.js';
+import { createControlPlaneClient } from '@autocatalyst/sdk';
+import type { ControlPlaneService } from '@autocatalyst/core';
+import { readLaunchCounter } from './launch-context.js';
+import * as scriptedResults from './scripted-results.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   FAKE_FIXTURE_PROJECT,
+  FAKE_TENANT,
   SPEC_EMOJI,
   SPEC_OPEN_QUESTIONS_HEADING,
   SPEC_PASSAGE_A,
@@ -19,7 +26,7 @@ import {
   SPEC_PASSAGE_D,
   SPEC_REVISION_INSERT
 } from './constants.js';
-import { pullRequestStateFile, resolveFakeStatePaths } from './paths.js';
+import { failureFile, pullRequestStateFile, resolveFakeStatePaths } from './paths.js';
 
 const AUTH = { authorization: 'Bearer fake-mode-token' } as const;
 
@@ -37,10 +44,10 @@ afterEach(async () => {
   }
 });
 
-async function startFakeServer(): Promise<Harness> {
+async function startFakeServer(extra: Partial<ControlPlaneServerOptions> = {}): Promise<Harness> {
   const stateDir = await mkdtemp(join(tmpdir(), 'ac-fake-'));
   const config = readControlPlaneAppConfig(['--fake-mode', '--fake-state-dir', stateDir], {});
-  const app = await createControlPlaneServer(config);
+  const app = await createControlPlaneServer({ ...config, ...extra });
   const harness: Harness = { app, stateDir };
   harnesses.push(harness);
   return harness;
@@ -311,4 +318,178 @@ describe('fake mode end-to-end (in-process)', () => {
     expect(run.currentStep).toBe('failed');
     expect(typeof run.failureReason).toBe('string');
   }, 90_000);
+});
+
+function sdkFor(app: FastifyInstance) {
+  return createControlPlaneClient({
+    baseUrl: 'http://fake.test', bearerToken: 'fake-mode-token',
+    fetch: async (url, init) => {
+      const response = await app.inject({
+        url: String(url), method: (init?.method ?? 'GET') as 'GET' | 'POST' | 'PATCH',
+        headers: Object.fromEntries(new Headers(init?.headers)),
+        ...(typeof init?.body === 'string' ? { payload: init.body } : {})
+      });
+      return new Response(response.body, { status: response.statusCode });
+    }
+  });
+}
+
+describe('testing guide fake-mode wiring without a listening socket', () => {
+  it('stores complete revisions after implementation feedback, then reads the latest without a worktree', async () => {
+    const { app, stateDir } = await startFakeServer();
+    const client = sdkFor(app);
+    const id = await startRunFromIssue(app, await createSecretAndProject(app), 1);
+    await waitForStep(app, id, 'spec.human_review');
+    await expect(client.getRunTestingGuide(id)).rejects.toMatchObject({ status: 404 });
+    await expect(client.getRunTestingGuide('missing')).rejects.toMatchObject({ status: 404 });
+    await client.replyToRun(id, { kind: 'approve', body: 'Approved spec.' });
+    await waitForStep(app, id, 'implementation.human_review');
+    const first = await client.getRunTestingGuide(id);
+    expect(first.revision).toBe(1);
+    expect(first.items.map(item => item.text[0])).toEqual(['A', 'B', 'C', 'D']);
+    const reply = await client.replyToRun(id, { kind: 'feedback', title: 'Try again', body: 'Check the fixture build again.' });
+    await waitForStep(app, id, 'implementation.human_review');
+    const next = await client.getRunTestingGuide(id);
+    expect(next.revision).toBe(2);
+    expect(next.items.slice(0, 3)).toEqual(first.items.slice(0, 3));
+    expect(next.items.slice(3).map(item => item.text[0])).toEqual(['D', 'E']);
+    expect(next.items.slice(3).every(item => !first.items.some(old => old.id === item.id))).toBe(true);
+    expect((await client.listRunFeedback(id)).feedback).toContainEqual(expect.objectContaining({
+      id: reply.classification.createdFeedbackId, status: 'addressed', target: 'implementation'
+    }));
+    const path = ['implementation.build', 'implementation.testing_guide', 'implementation.human_review'];
+    const steps = (await client.listRunSteps(id)).steps;
+    expect(steps.map(step => step.step).filter(step => path.includes(step))).toEqual([...path, ...path]);
+    const sessions = (await client.listRunSessions(id)).sessions.filter(session => session.step === path[1]);
+    expect(sessions).toHaveLength(2);
+    expect(sessions.every(session => session.role === 'implementer' && session.outcome === 'succeeded' && session.usageAvailable)).toBe(true);
+    expect(await readLaunchCounter(resolveFakeStatePaths(stateDir))).toBe(8);
+
+    const paths = resolveFakeStatePaths(stateDir);
+    const db = createSqliteDatabase({ path: paths.databasePath });
+    const workspace = await createDrizzleDomainRepositories(db).runWorkspaceMetadata.findByRunId(id);
+    db.close();
+    expect(workspace).not.toBeNull();
+    const git = promisify(execFile);
+    const repo = workspace!.workspaceRepoRoot;
+    expect((await git('git', ['ls-files'], { cwd: repo })).stdout).not.toMatch(/testing-guide/u);
+    await git('git', ['worktree', 'remove', '--force', repo], { cwd: paths.hostClone });
+    await expect(access(repo)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(client.getRunTestingGuide(id)).resolves.toEqual(next);
+  }, 30_000);
+
+  it('resumes a failed first attempt and stores pass one in a new occurrence', async () => {
+    const { app, stateDir } = await startFakeServer();
+    const client = sdkFor(app);
+    const control = failureFile(resolveFakeStatePaths(stateDir), 4);
+    await writeFile(control, JSON.stringify({ step: 'implementation.testing_guide' }), 'utf8');
+    const id = await startRunFromIssue(app, await createSecretAndProject(app), 4);
+    await waitForStep(app, id, 'failed');
+    await expect(access(control + '.fired')).resolves.toBeUndefined();
+    await expect(client.getRunTestingGuide(id)).rejects.toMatchObject({ status: 404 });
+    expect((await client.recoverRun(id)).mode).toBe('resume');
+    await waitForStep(app, id, 'implementation.human_review');
+    const guide = await client.getRunTestingGuide(id);
+    expect(guide.revision).toBe(1);
+    expect(guide.items.map(item => item.text[0])).toEqual(['A', 'B', 'C', 'D']);
+    const visits = (await client.listRunSteps(id)).steps.filter(step => step.step === 'implementation.testing_guide');
+    expect(visits).toHaveLength(2);
+    expect(visits[0]?.id).not.toBe(visits[1]?.id);
+    expect(visits[1]?.checkpointResult).toEqual({ kind: 'testing_guide', revision: 1, itemCount: 4 });
+  }, 30_000);
+
+  it('does not fall back past an active table; a role or step default route authorizes the guide', async () => {
+    const { app } = await startFakeServer();
+    const client = sdkFor(app);
+    const profile = (await client.listConfigurationRecords()).records.find(record => record.kind === 'provider_profile');
+    expect(profile).toBeDefined();
+    const build = { id: 'build', profileId: profile!.id, route: { mode: 'agent', step: 'implementation.build', defaultForStep: true } } as const;
+    const table = await client.createConfigurationRecord({ kind: 'model_routing_table', tenant: FAKE_TENANT,
+      settings: { active: true, entries: [build] } });
+    const projectId = await createSecretAndProject(app);
+    const id = await startRunFromIssue(app, projectId, 4);
+    await waitForStep(app, id, 'failed');
+    expect((await client.getRun(id)).failureReason).toBe('route_not_found');
+    expect((await client.listRunSteps(id)).steps.at(-2)?.step).toBe('implementation.testing_guide');
+    await expect(client.getRunTestingGuide(id)).rejects.toMatchObject({ status: 404 });
+
+    const guide = { id: 'guide', profileId: profile!.id };
+    await client.updateConfigurationRecord(table.id, { kind: 'model_routing_table', settings: { entries: [
+      build, { ...guide, route: { mode: 'agent', step: 'implementation.testing_guide', role: 'implementer' } }
+    ] } });
+    await client.recoverRun(id);
+    await waitForStep(app, id, 'implementation.human_review');
+    expect((await client.getRunTestingGuide(id)).revision).toBe(1);
+
+    await client.updateConfigurationRecord(table.id, { kind: 'model_routing_table', settings: { entries: [
+      build, { ...guide, route: { mode: 'agent', step: 'implementation.testing_guide', defaultForStep: true } }
+    ] } });
+    const second = await startRunFromIssue(app, projectId, 10);
+    await waitForStep(app, second, 'implementation.human_review');
+    expect((await client.getRunTestingGuide(second)).revision).toBe(1);
+  }, 30_000);
+
+  it('corrects a rejected structured result, and fails on persistent invalid output without storing a revision', async () => {
+    const { app } = await startFakeServer();
+    const client = sdkFor(app);
+    const projectId = await createSecretAndProject(app);
+    const original = scriptedResults.buildScriptedSessionEvents;
+    let rejectedFirst = false;
+    const scripted = vi.spyOn(scriptedResults, 'buildScriptedSessionEvents').mockImplementation(selection => {
+      const events = original(selection);
+      if (selection.step !== 'implementation.testing_guide' || (selection.issueNumber !== 10 && rejectedFirst)) return events;
+      rejectedFirst = true;
+      return events.map(event => event.type === 'result' ? { ...event, structuredOutput: {
+        instructions: 'Invalid output', items: [{ text: 'A', id: 'model-supplied-id' }]
+      } } : event);
+    });
+    try {
+      const corrected = await startRunFromIssue(app, projectId, 4);
+      await waitForStep(app, corrected, 'implementation.human_review');
+      expect((await client.getRunTestingGuide(corrected)).revision).toBe(1);
+      expect((await client.listRunSessions(corrected)).sessions.filter(session => session.step === 'implementation.testing_guide')
+        .map(session => session.outcome)).toEqual(['failed', 'succeeded']);
+      const failed = await startRunFromIssue(app, projectId, 10);
+      await waitForStep(app, failed, 'failed');
+      expect((await client.getRun(failed)).failureReason).toBe('testing_guide_failed');
+      await expect(client.getRunTestingGuide(failed)).rejects.toMatchObject({ status: 404 });
+      expect((await client.listRunSessions(failed)).sessions.filter(session => session.step === 'implementation.testing_guide')
+        .map(session => session.outcome)).toEqual(['failed', 'failed', 'failed']);
+    } finally {
+      scripted.mockRestore();
+    }
+  }, 30_000);
+
+  it('redispatches a stored, still-open guide without a new launch, session, or revision', async () => {
+    let service!: ControlPlaneService;
+    const { app, stateDir } = await startFakeServer({ onControlPlaneReady: value => { service = value; } });
+    const client = sdkFor(app);
+    const original = DrizzleRunRepository.prototype.recordRunStepTransition;
+    let interrupted = false;
+    const transition = vi.spyOn(DrizzleRunRepository.prototype, 'recordRunStepTransition').mockImplementation(async function (this: DrizzleRunRepository, input) {
+      if (!interrupted && input.expectedStep === 'implementation.testing_guide') {
+        interrupted = true;
+        throw new Error('Injected post-store transition interruption');
+      }
+      return original.call(this, input);
+    });
+    try {
+      const id = await startRunFromIssue(app, await createSecretAndProject(app), 4);
+      await expect.poll(() => interrupted).toBe(true);
+      expect((await client.getRun(id)).currentStep).toBe('implementation.testing_guide');
+      const stored = await client.getRunTestingGuide(id);
+      expect(stored.revision).toBe(1);
+      const sessions = await client.listRunSessions(id);
+      expect(sessions.sessions.filter(session => session.step === 'implementation.testing_guide')).toHaveLength(1);
+      const launches = await readLaunchCounter(resolveFakeStatePaths(stateDir));
+      await service.tick({ runId: id, tenant: FAKE_TENANT, principal: { id: 'tick', kind: 'system', tenantId: FAKE_TENANT } });
+      await waitForStep(app, id, 'implementation.human_review');
+      expect(await client.getRunTestingGuide(id)).toEqual(stored);
+      expect(await client.listRunSessions(id)).toEqual(sessions);
+      expect(await readLaunchCounter(resolveFakeStatePaths(stateDir))).toBe(launches);
+      expect(transition.mock.calls.filter(([input]) => input.expectedStep === 'implementation.testing_guide')).toHaveLength(2);
+    } finally {
+      transition.mockRestore();
+    }
+  }, 30_000);
 });

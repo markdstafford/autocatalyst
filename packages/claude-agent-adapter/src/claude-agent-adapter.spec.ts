@@ -1,3 +1,4 @@
+import { TESTING_GUIDE_SCHEMA_ID, testingGuideAuthorResultSchema } from '@autocatalyst/api-contract';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os, { tmpdir } from 'node:os';
@@ -1001,6 +1002,28 @@ describe('createClaudeAgentAdapter — structured result capture', () => {
       expect(JSON.parse(resultText)).toEqual(structuredOutput);
     } finally {
       await rm(scratchDir, { recursive: true });
+    }
+  });
+
+  it('exposes exactly the guide read tools and captures the final guide in scratch', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-claude-guide-'));
+    try {
+      const guide = { instructions: 'Inspect the build.', items: [{ text: 'Check it.' }] };
+      const launch = vi.fn((_: ClaudeSessionLaunchOptions) => asyncIter([{
+        type: 'result', structuredOutput: guide, result: { is_error: false }
+      }]));
+      const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
+      await runAdapterWithCapture(adapter, {
+        step: 'implementation.testing_guide', schemaId: TESTING_GUIDE_SCHEMA_ID, schema: testingGuideAuthorResultSchema,
+        resultFile: 'testing-guide-result-sess_test.json', required: true
+      }, { scratchRoot: scratchDir, allowedTools: ['Read', 'Glob', 'Grep'] });
+      expect(launch.mock.calls[0]?.[0]).toMatchObject({
+        allowedTools: ['Read', 'Glob', 'Grep'],
+        options: { tools: ['Read', 'Glob', 'Grep'], strictMcpConfig: true }
+      });
+      expect(JSON.parse(await readFile(path.join(scratchDir, 'testing-guide-result-sess_test.json'), 'utf8'))).toEqual(guide);
+    } finally {
+      await rm(scratchDir, { recursive: true, force: true });
     }
   });
 

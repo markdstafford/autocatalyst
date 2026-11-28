@@ -12,6 +12,39 @@ Last updated: 2026-11-27 (reviewed conversation foundations, #195).
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
 
+## Testing guides after builds (#163)
+
+- `packages/core/src/run-step-catalog.ts` and `run-workflows.ts` put the implementer-only
+  `implementation.testing_guide` between build and implementation review. PR review's revise
+  edge still returns straight to the gate.
+- `packages/core/src/testing-guide.ts` owns the prompt, byte-bound complete-line truncation,
+  immediate-predecessor item ID matching, and bounded correction requests. The orchestrator checks
+  the occurrence's durable row before dispatch and inserts under its run mutation guard before
+  advancing. After a post-insert transition interruption, the existing dispatch admission only
+  advances; it does not regenerate the guide or add sessions. Failed guides use normal run recovery.
+- `apps/control-plane/src/testing-guide-context-loader.ts` loads scope-checked issue, artifact,
+  build and fixed feedback evidence. `run-workspace-git-port.ts` pins the final head and reads
+  the full changed-file list and bounded `getDiffText` patch from the same comparison.
+- `packages/api-contract/src/testing-guide.ts` defines the canonical and public shapes.
+  `packages/execution/src/result-contracts.ts` and `provider-schema-projection.ts` capture
+  `autocatalyst.testing_guide.v1` under the attempt-qualified `testing-guide-result.json` name.
+  OpenAI decodes its nullable transport field before canonical validation. Its guide tools are in
+  `packages/openai-agent-adapter/src/testing-guide-tools.ts`. Claude limits the native tool list;
+  Codex App Server rejects the step's tool policy rather than adding a shell.
+- `packages/persistence/drizzle/0015_testing_guides.sql` and `DrizzleTestingGuideRepository` in
+  `domain-repositories.ts` keep immutable revisions. This is independent of `Run.testingGuideResult`.
+  Core `routes.ts` and `control-plane-service.ts` provide the database-only
+  `GET /v1/runs/:id/testing-guide`; `packages/sdk/src/client.ts` exposes `getRunTestingGuide(id)`.
+- Active route tables need a guide route before upgrading; see
+  [real dispatch](../../docs/operators/real-dispatch.md). [Fake fixtures](../../docs/operators/fake-mode.md)
+  select the pass from the next durable revision, not the number of launches.
+- Verify with `pnpm nx test core -- testing-guide.spec.ts`, the control-plane
+  `fake/fake-mode.integration.spec.ts` (Fastify injection) and `fake/full-wiring.e2e.spec.ts`
+  (spawned production fake-mode entrypoint, requires loopback access). The live auto-dispatch SSE
+  test in `apps/control-plane/src/integration.spec.ts` needs a valid guide result from its stub:
+  a bare `advance` fails authoring instead of reaching the human gate. The
+  [concept proposal](testing-guide-concept-proposal.md) is staged for human doc review.
+
 ## Reviewed agent conversations (#195)
 
 - `apps/control-plane/src/reviewed-conversation.ts` owns continuity admission, worktree-instance proof, and the release-owned qualification lists. `server.ts` passes host-only occurrence and route data after materialization; these do not enter task-input JSON.

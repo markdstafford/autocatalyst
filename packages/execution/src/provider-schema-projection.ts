@@ -1,3 +1,4 @@
+import { TESTING_GUIDE_SCHEMA_ID } from '@autocatalyst/api-contract';
 import { z } from 'zod';
 
 import { UnsupportedProviderCapabilityError } from './agent-provider-adapter.js';
@@ -82,6 +83,29 @@ function buildProjectedSchema(
       return buildImplementerDispositionsProjection(target);
     case 'autocatalyst.spec_author.v1':
       return buildSpecAuthorProjection(target);
+    case TESTING_GUIDE_SCHEMA_ID: {
+      const strict = target === 'openai_agents_output_type';
+      return {
+        type: 'object',
+        properties: {
+          instructions: { type: 'string' },
+          items: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                text: { type: 'string' },
+                expected: strict ? { type: ['string', 'null'] } : { type: 'string' }
+              },
+              required: strict ? ['text', 'expected'] : ['text'],
+              additionalProperties: false
+            }
+          }
+        },
+        required: ['instructions', 'items'],
+        additionalProperties: false
+      };
+    }
     case 'autocatalyst.pr_finalize.v1':
       return buildPrFinalizeProjection(target);
     default:

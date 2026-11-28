@@ -77,5 +77,7 @@ export interface RunWorkspaceGitPort {
   readFileAtRef(input: ReadFileAtRefInput): Promise<string | null>;
   listFilesAtRef(input: ListFilesAtRefInput): Promise<readonly string[]>;
   getChangedFiles(input: GetChangedFilesInput): Promise<readonly ChangedFileEntry[]>;
+  /** Patch evidence, which may be capped just beyond the prompt limit. */
+  getDiffText(input: GetChangedFilesInput): Promise<string>;
   readonly reviewerPolicy: ReviewerWorkspacePolicy;
 }

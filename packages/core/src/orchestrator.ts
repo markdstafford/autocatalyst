@@ -1,3 +1,5 @@
+import { assignTestingGuideItemIds, authorTestingGuide } from './testing-guide.js';
+import type { StoredTestingGuide, TestingGuideRepository } from './domain-repositories.js';
 import { ArchivedRunRecoveryError, RunTransitionConflictError } from './domain-repositories.js';
 import { workflowOwnedSteps } from './run-transition.js';
 import { StaleDispatchError, type CommitDispatchResult } from './dispatch-result-commits.js';
@@ -138,6 +140,10 @@ export interface RunWorkInput {
   readonly runId: string;
   readonly run: Run;
   readonly tenant: string;
+  readonly toolPolicyMode?: 'read_only' | 'write';
+  readonly testingGuidePass?: number;
+  readonly previousTestingGuide?: StoredTestingGuide;
+  readonly testingGuideCorrection?: string;
   readonly publicationReview?: import('./pr-finalize.js').PublicationReviewSnapshot;
 }
 
@@ -325,6 +331,7 @@ export interface DefaultOrchestratorOptions {
   readonly freezeRunSpecForPullRequest?: typeof freezeRunSpecForPullRequest;
   readonly specFreezeDependencies?: SpecFreezeDependencies;
   readonly runSteps?: RunStepRepository;
+  readonly testingGuides?: TestingGuideRepository;
   readonly convergenceEngine?: ConvergenceEngine;
   readonly autoDispatch?: AutoDispatchOptions;
   readonly pullRequestOpenDependencies?: PullRequestOpenWiringDependencies;
@@ -360,6 +367,12 @@ function unwrapCause(error: unknown): unknown {
   return undefined;
 }
 
+class TestingGuideAdvanceInterrupted extends Error {
+  constructor(cause: unknown) {
+    super('Testing guide was stored before the advance was interrupted.', { cause });
+  }
+}
+
 // --- Implementation ---
 
 export class DefaultOrchestrator implements Orchestrator {
@@ -384,6 +397,7 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #freezeRunSpecForPullRequest: typeof freezeRunSpecForPullRequest;
   readonly #specFreezeDependencies: SpecFreezeDependencies | undefined;
   readonly #runSteps: RunStepRepository | undefined;
+  readonly #testingGuides: TestingGuideRepository | undefined;
   readonly #convergenceEngine: ConvergenceEngine | undefined;
   readonly #repairEpoch = randomUUID();
   readonly #repairWakeups = new Set<string>();
@@ -416,6 +430,7 @@ export class DefaultOrchestrator implements Orchestrator {
     this.#freezeRunSpecForPullRequest = options.freezeRunSpecForPullRequest ?? freezeRunSpecForPullRequest;
     this.#specFreezeDependencies = options.specFreezeDependencies;
     this.#runSteps = options.runSteps;
+    this.#testingGuides = options.testingGuides;
     this.#convergenceEngine = options.convergenceEngine;
     this.#pullRequestOpenDependencies = options.pullRequestOpenDependencies;
   }
@@ -975,7 +990,12 @@ export class DefaultOrchestrator implements Orchestrator {
           } else failure = new OrchestratorError('conflict', 'Dispatch source changed.');
         } else {
           failure = error;
-          if (reservation.automatic) await this.#handleAutoDispatchFailure(run, error, apply);
+          if (error instanceof TestingGuideAdvanceInterrupted) {
+            this.#logger?.warn('testing_guide_advance_interrupted', {
+              runId: run.id, step: run.currentStep, runStepId: reservation.runStep?.id,
+              ...this.#safeCause(error.cause)
+            });
+          } else if (reservation.automatic) await this.#handleAutoDispatchFailure(run, error, apply);
         }
       } finally {
         await this.#withRunMutation(input, async (_apply, admit) => {
@@ -1211,6 +1231,10 @@ export class DefaultOrchestrator implements Orchestrator {
       });
     }
 
+    if (run.currentStep === 'implementation.testing_guide') {
+      return this.#dispatchTestingGuide(source, commitTransition);
+    }
+
     if (this.#unitOfWork === undefined) {
       throw new OrchestratorError('persistence_failed', 'No unit of work configured.');
     }
@@ -1270,7 +1294,7 @@ export class DefaultOrchestrator implements Orchestrator {
       } } : {})
     };
     const workInput: RunWorkInput = run.currentStep === 'pr.finalize'
-      ? { ...baseWorkInput, toolPolicyMode: 'read_only' } as unknown as RunWorkInput
+      ? { ...baseWorkInput, toolPolicyMode: 'read_only' }
       : baseWorkInput;
     const result = await unitOfWork.run(workInput);
     if (!await this.#dispatchSourceMatches(source)) throw new StaleDispatchError();
@@ -1443,6 +1467,57 @@ export class DefaultOrchestrator implements Orchestrator {
         ...(checkpointResult !== undefined ? { checkpointResult } : {}),
         origin: 'runner'
       });
+    });
+  }
+
+  async #dispatchTestingGuide(
+    source: DispatchSource,
+    commitTransition: CommitDispatchTransition
+  ): Promise<OrchestratedRunResult> {
+    const { run, runStep } = source;
+    const repository = this.#testingGuides;
+    if (!repository || !runStep) {
+      throw new OrchestratorError('persistence_failed', 'Testing guide persistence or occurrence is unavailable.');
+    }
+    const scope = { runId: run.id, tenant: run.tenant };
+    const previous = await repository.findLatestByRun(scope);
+    const authored = previous?.runStepId === runStep.id ? undefined : await authorTestingGuide({
+      runId: run.id,
+      request: async correction => {
+        if (!await this.#dispatchSourceMatches(source)) throw new StaleDispatchError();
+        if (!this.#unitOfWork) throw new OrchestratorError('persistence_failed', 'No unit of work configured.');
+        return this.#unitOfWork.run({
+          ...scope, run, toolPolicyMode: 'read_only', testingGuidePass: (previous?.revision ?? 0) + 1,
+          ...(previous ? { previousTestingGuide: previous } : {}),
+          ...(correction ? { testingGuideCorrection: correction } : {})
+        });
+      }
+    });
+    return commitTransition(async apply => {
+      if (authored && 'reason' in authored) {
+        return apply({ ...scope, directive: 'fail', origin: 'runner', reason: authored.reason });
+      }
+
+      let stored = await repository.findLatestByRun(scope);
+      if (stored?.runStepId !== runStep.id) {
+        if (!authored) throw new OrchestratorError('persistence_failed', 'Stored testing guide is unavailable.');
+        stored = await repository.create({
+          ...scope, runStepId: runStep.id, id: randomUUID(),
+          revision: (stored?.revision ?? 0) + 1, instructions: authored.guide.instructions,
+          items: assignTestingGuideItemIds(stored?.items ?? [], authored.guide.items),
+          createdAt: (this.#clock ?? (() => new Date().toISOString()))()
+        });
+      }
+      try {
+        return await apply({
+          ...scope, expectedStepId: runStep.id, directive: 'advance', origin: 'runner',
+          checkpointResult: { kind: 'testing_guide', revision: stored.revision, itemCount: stored.items.length }
+        });
+      } catch (cause) {
+        // A durable guide is the receipt for this occurrence. Leave it open if
+        // the transition did not commit; the next admission only advances.
+        throw new TestingGuideAdvanceInterrupted(cause);
+      }
     });
   }
 

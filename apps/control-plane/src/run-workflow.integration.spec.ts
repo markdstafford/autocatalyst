@@ -220,7 +220,7 @@ describe('production workflow reads with scripted sessions', () => {
       await harness.tick(run.id);
       expect((await harness.run(run.id)).currentStep).toBe('implementation.human_review');
       expect((await harness.history(run.id)).map(({ step }) => step))
-        .toEqual(expectedPath(body).slice(0, 4));
+        .toEqual(expectedPath(body).slice(0, 5));
       expect(await harness.workflow(run.id)).toEqual(body);
     } finally {
       database.close();

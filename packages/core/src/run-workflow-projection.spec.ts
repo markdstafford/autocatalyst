@@ -52,14 +52,14 @@ describe('workflow projection', () => {
     const result = projectRunWorkflow('feature', validateRunWorkflow('feature', definition));
     const ids = result.steps.map(step => step.id);
     expect(ids).toEqual([
-      'intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build',
+      'intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.testing_guide',
       'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done',
       'spec.awaiting_input', 'implementation.awaiting_input', 'canceled', 'failed'
     ]);
     expect(new Set(ids).size).toBe(ids.length);
     expect(result.phases).toEqual([
       { ...spec, steps: ['spec.author', 'spec.human_review', 'spec.awaiting_input'] },
-      { ...implementation, steps: ['implementation.plan', 'implementation.build', 'implementation.human_review', 'implementation.awaiting_input'] },
+      { ...implementation, steps: ['implementation.plan', 'implementation.build', 'implementation.testing_guide', 'implementation.human_review', 'implementation.awaiting_input'] },
       { ...pr, steps: ['pr.finalize', 'pr.open', 'pr.human_review'] }
     ]);
     expect(result.steps.filter(step => !step.onPath).map(step => step.id)).toEqual(ids.slice(-4));
@@ -79,8 +79,9 @@ describe('workflow projection', () => {
       ['spec.human_review', 'advance', 'implementation.plan'],
       ['spec.human_review', 'revise', 'spec.author'],
       ['implementation.plan', 'advance', 'implementation.build'],
-      ['implementation.build', 'advance', 'implementation.human_review'],
+      ['implementation.build', 'advance', 'implementation.testing_guide'],
       ['implementation.build', 'needs_input', 'implementation.awaiting_input'],
+      ['implementation.testing_guide', 'advance', 'implementation.human_review'],
       ['implementation.human_review', 'advance', 'pr.finalize'],
       ['implementation.human_review', 'revise', 'implementation.build'],
       ['pr.finalize', 'advance', 'pr.open'],

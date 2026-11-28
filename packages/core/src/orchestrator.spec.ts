@@ -1,3 +1,4 @@
+import type { StoredTestingGuide, TestingGuideRepository } from './domain-repositories.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { Artifact, Conversation, Feedback, Message, NonModelPrincipal, Run, RunStateTransitionEvent, RunStep, Topic } from '@autocatalyst/api-contract';
 import type { RunReplyRequest } from '@autocatalyst/api-contract';
@@ -14,6 +15,7 @@ import {
   type AutoDispatchOptions,
   type ReplyToRunInput,
   type RunUnitOfWork,
+  type RunWorkResult,
   type WorkspaceContextResolver
 } from './orchestrator.js';
 import type { SpecAuthoringServiceDependencies } from './spec-authoring-service.js';
@@ -179,6 +181,7 @@ function makeOrchestrator(opts: {
   specFreezeDependencies?: SpecFreezeDependencies;
   runWorkspaceMetadata?: RunWorkspaceMetadataRepository;
   runSteps?: RunStepRepository;
+  testingGuides?: TestingGuideRepository;
   convergenceEngine?: ConvergenceEngine;
   logger?: { warn: ReturnType<typeof vi.fn>; info?: ReturnType<typeof vi.fn> };
   autoDispatch?: AutoDispatchOptions;
@@ -207,6 +210,7 @@ function makeOrchestrator(opts: {
     ...(opts.freezeRunSpecForPullRequest !== undefined ? { freezeRunSpecForPullRequest: opts.freezeRunSpecForPullRequest } : {}),
     ...(opts.specFreezeDependencies !== undefined ? { specFreezeDependencies: opts.specFreezeDependencies } : {}),
     ...(opts.runWorkspaceMetadata !== undefined ? { runWorkspaceMetadata: opts.runWorkspaceMetadata } : {}),
+    ...(opts.testingGuides !== undefined ? { testingGuides: opts.testingGuides } : {}),
     ...(opts.runSteps !== undefined ? { runSteps: opts.runSteps } : {}),
     ...(opts.convergenceEngine !== undefined ? { convergenceEngine: opts.convergenceEngine } : {}),
     ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
@@ -2150,8 +2154,8 @@ describe('DefaultOrchestrator.dispatch — reviewed step selection', () => {
 
   it('applies returned convergence directives through centralized transition path', async () => {
     const existing = makeRun({ currentStep: 'implementation.build' });
-    const updated = makeRun({ currentStep: 'implementation.human_review' });
-    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.human_review', phase: 'implementation' });
+    const updated = makeRun({ currentStep: 'implementation.testing_guide' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.testing_guide', phase: 'implementation' });
     const currentRunStep = makeRunStep({ step: 'implementation.build', phase: 'implementation' });
     const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
     const runs = makeFakeRunRepo({
@@ -2183,8 +2187,8 @@ describe('DefaultOrchestrator.dispatch — reviewed step selection', () => {
     expect(recordTransition).toHaveBeenCalledTimes(1);
     const transitionCall = recordTransition.mock.calls[0]?.[0];
     // recordRunStepTransition receives { runId, currentStep, terminal, runStep, failureReason, ... }
-    expect(transitionCall?.currentStep).toBe('implementation.human_review');
-    expect(result.run.currentStep).toBe('implementation.human_review');
+    expect(transitionCall?.currentStep).toBe('implementation.testing_guide');
+    expect(result.run.currentStep).toBe('implementation.testing_guide');
   });
 
   it('applies fail directive when convergence engine returns fail', async () => {
@@ -2317,10 +2321,10 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     expect(result.run.currentStep).toBe('implementation.plan');
   });
 
-  it('implementation.build convergence advances run to implementation.human_review', async () => {
+  it('implementation.build convergence advances run to implementation.testing_guide', async () => {
     const existing = makeRun({ currentStep: 'implementation.build' });
-    const updated = makeRun({ currentStep: 'implementation.human_review' });
-    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.human_review', phase: 'implementation' });
+    const updated = makeRun({ currentStep: 'implementation.testing_guide' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.testing_guide', phase: 'implementation' });
     const currentRunStep = makeRunStep({ step: 'implementation.build', phase: 'implementation' });
     const buildCheckpoint = { ...convergedCheckpoint, step: 'implementation.build' };
     const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
@@ -2345,9 +2349,9 @@ describe('reviewed step integration — transitions and checkpoint persistence',
 
     const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
 
-    expect(result.run.currentStep).toBe('implementation.human_review');
+    expect(result.run.currentStep).toBe('implementation.testing_guide');
     const transitionCall = recordTransition.mock.calls[0]?.[0];
-    expect(transitionCall?.currentStep).toBe('implementation.human_review');
+    expect(transitionCall?.currentStep).toBe('implementation.testing_guide');
   });
 
   it('keeps file_issue on the issue-canonical one-shot path', async () => {
@@ -3510,5 +3514,88 @@ describe('run operator transitions', () => {
     } finally {
       releaseWork.release();
     }
+  });
+});
+
+describe('testing guide dispatch', () => {
+  function harness() {
+    const guideStep = makeRunStep({ step: 'implementation.testing_guide', phase: 'implementation' });
+    let active = makeRun({ currentStep: guideStep.step, workKind: 'chore' });
+    let open = guideStep;
+    let latest: StoredTestingGuide | null = null;
+    const create = vi.fn(async ({ tenant: _tenant, ...stored }: StoredTestingGuide & { tenant: string }) => {
+      latest = stored;
+      return stored;
+    });
+    const logger = { warn: vi.fn() };
+    const transition = vi.fn(async (input: RecordRunStepTransitionInput) => {
+      if (input.currentStep === 'implementation.human_review') expect(latest).not.toBeNull();
+      active = { ...active, currentStep: input.currentStep, terminal: input.terminal };
+      open = makeRunStep({ id: 'next', step: input.currentStep });
+      return { run: active, runStep: open };
+    });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn(async () => active), findLatestOpenRunStep: vi.fn(async () => open), recordRunStepTransition: transition
+    });
+    const launch = vi.fn<RunUnitOfWork['run']>().mockResolvedValue({ directive: 'advance',
+      result: { instructions: 'Inspect the build.', items: [{ text: 'Inspect it.' }] } });
+    const converge = vi.fn<ConvergenceEngine['run']>().mockRejectedValue(new Error('Convergence must not run.'));
+    const engine: ConvergenceEngine = { run: converge };
+    const { orchestrator } = makeOrchestrator({
+      runs, logger, convergenceEngine: engine, unitOfWork: { run: launch },
+      testingGuides: { create, findLatestByRun: async () => latest }
+    });
+    const scope = { runId: active.id, tenant: active.tenant };
+    return { orchestrator, transition, launch, create, converge, logger, scope, guideStep, read: () => active,
+      setPrior: (value: StoredTestingGuide) => { latest = value; },
+      setCanceled: () => { active = { ...active, currentStep: 'canceled', terminal: true }; open = makeRunStep({ id: 'canceled', step: 'canceled' }); } };
+  }
+
+  it('keeps the durable occurrence open after an automatic post-store advance error, then only advances on admission', async () => {
+    const h = harness();
+    h.transition.mockRejectedValueOnce(new Error('Injected interruption'));
+    await h.orchestrator.admitForDispatch(h.scope);
+    await expect.poll(() => h.logger.warn.mock.calls.some(([event]) => event === 'testing_guide_advance_interrupted')).toBe(true);
+    expect(h.read().currentStep).toBe('implementation.testing_guide');
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ runStepId: h.guideStep.id, revision: 1 }));
+    expect(h.launch).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ toolPolicyMode: 'read_only', testingGuidePass: 1 }));
+    await h.orchestrator.admitForDispatch(h.scope);
+    await expect.poll(() => h.read().currentStep).toBe('implementation.human_review');
+    expect(h.transition.mock.calls[1]?.[0]).toMatchObject({
+      sourceRunStepId: h.guideStep.id,
+      checkpointResult: { kind: 'testing_guide', revision: 1, itemCount: 1 }
+    });
+    expect(h.launch).toHaveBeenCalledTimes(1);
+    expect(h.create).toHaveBeenCalledTimes(1);
+    expect(h.converge).not.toHaveBeenCalled();
+    await h.orchestrator.admitForDispatch(h.scope);
+    expect(h.transition).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not store or advance a stale author result', async () => {
+    const h = harness();
+    let finish!: (result: RunWorkResult) => void;
+    h.launch.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const pending = h.orchestrator.dispatch(h.scope);
+    await expect.poll(() => h.launch.mock.calls.length).toBe(1);
+    h.setCanceled();
+    finish({ directive: 'advance', result: { instructions: 'Ignore this.', items: [{ text: 'Inspect it.' }] } });
+    await pending;
+    expect(h.create).not.toHaveBeenCalled();
+    expect(h.transition).not.toHaveBeenCalled();
+  });
+
+  it.each(['provider_auth_failed', 'schema_validation_failed'])('preserves the prior revision on %s', async reason => {
+    const h = harness();
+    h.setPrior({ id: 'guide_1', runId: h.scope.runId, runStepId: 'previous_step', revision: 1,
+      instructions: 'Prior instructions.', items: [{ id: 'old', text: 'Test it.' }], createdAt: timestamp });
+    h.launch.mockResolvedValue({ directive: 'fail', reason });
+    await h.orchestrator.dispatch(h.scope);
+    expect(h.create).not.toHaveBeenCalled();
+    expect(h.transition.mock.calls[0]?.[0]).toMatchObject({
+      currentStep: 'failed', failureReason: reason === 'schema_validation_failed' ? 'testing_guide_failed' : reason
+    });
+    expect(h.launch).toHaveBeenCalledTimes(reason === 'schema_validation_failed' ? 3 : 1);
+    expect(h.launch.mock.calls[0]?.[0].testingGuidePass).toBe(2);
   });
 });

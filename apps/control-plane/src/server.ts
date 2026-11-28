@@ -18,7 +18,7 @@ const execFileAsync = promisify(execFile);
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { z } from 'zod';
 
-import { sessionRoleSchema } from '@autocatalyst/api-contract';
+import { sessionRoleSchema, TESTING_GUIDE_RESULT_FILE, TESTING_GUIDE_SCHEMA_ID } from '@autocatalyst/api-contract';
 import type { ConfigurationRecord, Conversation, ExecutionContext, NonModelPrincipal, Principal, Project, ProviderProfileSettings, Run, Topic } from '@autocatalyst/api-contract';
 import {
   buildProviderAdapterKey,
@@ -85,7 +85,6 @@ import {
   type RetainedRunEventStoreOptions,
   type RunUnitOfWork,
   type RunWorkInput,
-  type RunWorkspaceGitPort,
   type SpecAuthoringServiceDependencies,
   type SpecApprovalFinalizerDependencies,
   type SpecFreezeDependencies,
@@ -101,6 +100,7 @@ import { createCodeHostCredentialResolver } from './code-host-credential-resolve
 import { createReviewedExecutionDispatcher } from './reviewed-execution-dispatcher.js';
 import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
 import { createStaticClientNotFoundHandler, registerStaticClientRoutes } from './static-client.js';
+import { loadTestingGuidePrompt } from './testing-guide-context-loader.js';
 import { loadSpecAuthorPromptInput, SpecAuthoringContextLoadError } from './spec-authoring-context-loader.js';
 import {
   createAgentConnection,
@@ -112,6 +112,7 @@ import {
   createReviewedSpecAuthorResultContract,
   createSpecReviewerResultContract,
   createStepResultContractRegistry,
+  createTestingGuideResultContract,
   WorkspaceProvisioningError,
   registerPullRequestFinalizeResultContract,
   registerReviewerResultContract,
@@ -639,6 +640,7 @@ export function createControlPlaneStepResultContractRegistry(
     ),
     { resultFile: 'pr-finalize-result.json' }
   );
+  registry.register(createTestingGuideResultContract());
   registry.register(createSpecReviewerResultContract());
   registry.register(createReviewedSpecAuthorResultContract(
     options.specAuthorIdentity !== undefined ? { trustedSpeccedBy: options.specAuthorIdentity } : {}
@@ -716,6 +718,13 @@ export function resolveScratchResultValidationConfig(
       step: 'spec.author',
       schemaId: SPEC_AUTHOR_SCHEMA_ID,
       resultFile: 'step-result.json'
+    };
+  }
+
+  if (step === 'implementation.testing_guide') {
+    return {
+      mode: 'scratch_file' as const, contractRegistry: registry, step,
+      schemaId: TESTING_GUIDE_SCHEMA_ID, resultFile: TESTING_GUIDE_RESULT_FILE
     };
   }
 
@@ -1374,7 +1383,7 @@ export async function createControlPlaneServer(
 
   // Workspace git port is created whenever workspaceRoots are configured. It is used
   // both by the convergence engine (when realDispatch is enabled) and by specFreezeDependencies.
-  let runWorkspaceGit: RunWorkspaceGitPort | undefined;
+  let runWorkspaceGit: ReturnType<typeof createRunWorkspaceGitPort> | undefined;
   if (options.workspaceRoots !== undefined) {
     runWorkspaceGit = createRunWorkspaceGitPort({
       workspacesRoot: options.workspaceRoots.workspacesRoot
@@ -1614,7 +1623,18 @@ export async function createControlPlaneServer(
           }
         }
 
-        const isReadOnlySession = roleInput.toolPolicyMode === 'read_only' || workInput.run.currentStep === 'pr.finalize';
+        const isReadOnlySession = workInput.toolPolicyMode === 'read_only' ||
+          workInput.run.currentStep === 'pr.finalize' || workInput.run.currentStep === 'implementation.testing_guide';
+        let testingGuidePrompt: string | undefined;
+        if (workInput.run.currentStep === 'implementation.testing_guide') {
+          const project = workspace?.project;
+          const git = project?.workspaceRootOverride
+            ? createRunWorkspaceGitPort({ workspacesRoot: project.workspaceRootOverride })
+            : runWorkspaceGit;
+          testingGuidePrompt = await loadTestingGuidePrompt({
+            work: workInput, repositories: domainRepos, ...(git ? { git } : {}), ...(project ? { project } : {})
+          });
+        }
 
         const isImplementationBuildRoleSession =
           workInput.run.currentStep === 'implementation.build' &&
@@ -1721,6 +1741,9 @@ export async function createControlPlaneServer(
           ...(isReadOnlySession ? { toolPolicy: { allowedTools: ['Read', 'Glob', 'Grep'] as string[] } } : {}),
           prompt: (input) => {
             if (input.run.currentStep === 'spec.author') return specAuthorContext?.prompt;
+            if (input.run.currentStep === 'implementation.testing_guide') {
+              return [testingGuidePrompt, workInput.testingGuideCorrection].filter(Boolean).join('\n\n');
+            }
             if (input.run.currentStep === 'implementation.build') {
               if (!implementationBuildContext) return undefined;
               const evidence = roleInput.ciRepair;
@@ -1747,6 +1770,13 @@ export async function createControlPlaneServer(
             return undefined;
           },
           taskInputs: (input) => {
+            if (input.run.currentStep === 'implementation.testing_guide') {
+              const issueNumber = input.run.trackedIssue?.number;
+              return {
+                role: 'implementer', testingGuidePass: workInput.testingGuidePass ?? 1,
+                ...(issueNumber !== undefined ? { run: { issueNumber } } : {})
+              };
+            }
             // Spec-authoring step gets its own task inputs.
             if (input.run.currentStep === 'spec.author') {
               return specAuthorContext?.taskInputs as Record<string, unknown> | undefined;
@@ -2032,6 +2062,7 @@ export async function createControlPlaneServer(
     runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
     resolveWorkspaceContext: options.resolveWorkspaceContext ?? internalResolveWorkspaceContext,
     runSteps: domainRepos.runSteps,
+    testingGuides: domainRepos.testingGuides,
     ...(convergenceEngine !== undefined ? { convergenceEngine } : {}),
     ...(options.autoDispatch !== undefined ? { autoDispatch: options.autoDispatch } : {}),
     ...(specFreezeDependencies !== undefined ? { specFreezeDependencies } : {}),
@@ -2149,6 +2180,7 @@ export async function createControlPlaneServer(
     events: eventBus,
     policy,
     artifacts: domainRepos.artifacts,
+    testingGuides: domainRepos.testingGuides,
     feedback: domainRepos.feedback,
     runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
     workspaceFilesystem: nodeFilesystem,

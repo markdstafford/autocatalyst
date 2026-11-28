@@ -14,15 +14,15 @@ describe('domain schema migrations', () => {
       await migrateSqliteDatabase(database);
       const internal = asInternalSqliteDatabase(database);
 
-      const tables = names(internal.client.prepare("select name from sqlite_master where type = 'table' and name in (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").all(
-        'projects', 'conversations', 'topics', 'messages', 'runs', 'artifacts', 'feedback', 'publications', 'pull_requests', 'run_steps', 'sessions', 'test_results'
+      const tables = names(internal.client.prepare("select name from sqlite_master where type = 'table' and name in (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").all(
+        'projects', 'conversations', 'topics', 'messages', 'runs', 'artifacts', 'feedback', 'publications', 'pull_requests', 'run_steps', 'sessions', 'test_results', 'testing_guides'
       ));
-      expect(tables).toEqual(['artifacts', 'conversations', 'feedback', 'messages', 'projects', 'publications', 'pull_requests', 'run_steps', 'runs', 'sessions', 'test_results', 'topics']);
+      expect(tables).toEqual(['artifacts', 'conversations', 'feedback', 'messages', 'projects', 'publications', 'pull_requests', 'run_steps', 'runs', 'sessions', 'test_results', 'testing_guides', 'topics']);
 
-      const indexes = names(internal.client.prepare("select name from sqlite_master where type = 'index' and name in (?, ?, ?)").all(
-        'runs_one_active_per_topic', 'topics_one_main_per_conversation', 'pull_requests_one_per_run'
+      const indexes = names(internal.client.prepare("select name from sqlite_master where type = 'index' and name in (?, ?, ?, ?, ?)").all(
+        'runs_one_active_per_topic', 'topics_one_main_per_conversation', 'pull_requests_one_per_run', 'testing_guides_run_revision_idx', 'testing_guides_run_step_idx'
       ));
-      expect(indexes).toEqual(['pull_requests_one_per_run', 'runs_one_active_per_topic', 'topics_one_main_per_conversation']);
+      expect(indexes).toEqual(['pull_requests_one_per_run', 'runs_one_active_per_topic', 'testing_guides_run_revision_idx', 'testing_guides_run_step_idx', 'topics_one_main_per_conversation']);
 
       database.close();
     });
@@ -140,6 +140,9 @@ describe('domain schema migrations', () => {
       try {
         await migrateSqliteDatabase(database);
         const internal = asInternalSqliteDatabase(database);
+        expect(internal.client.prepare('SELECT id, current_step FROM runs').all())
+          .toEqual([{ id: 'run_seq', current_step: 'spec.author' }]);
+        expect(internal.client.prepare('SELECT count(*) AS n FROM testing_guides').get()).toEqual({ n: 0 });
         const rows = internal.client.prepare('SELECT id, sequence FROM sessions ORDER BY sequence').all() as Array<{ id: string; sequence: number }>;
         expect(rows).toEqual([
           { id: 'sess_a', sequence: 1 },

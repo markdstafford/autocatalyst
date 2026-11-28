@@ -208,6 +208,21 @@ export const runSteps = sqliteTable('run_steps', {
   index('run_steps_run_started_idx').on(table.runId, table.startedAt)
 ]);
 
+export const testingGuides = sqliteTable('testing_guides', {
+  id: text('id').primaryKey().notNull(),
+  runId: text('run_id').notNull().references(() => runs.id),
+  tenant: text('tenant').notNull(),
+  revision: integer('revision').notNull(),
+  runStepId: text('run_step_id').notNull().references(() => runSteps.id),
+  instructions: text('instructions').notNull(),
+  itemsJson: text('items_json').notNull(),
+  createdAt: text('created_at').notNull()
+}, table => [
+  check('testing_guides_revision_check', sql`typeof(${table.revision}) = 'integer' and ${table.revision} >= 1`),
+  uniqueIndex('testing_guides_run_revision_idx').on(table.runId, table.revision),
+  uniqueIndex('testing_guides_run_step_idx').on(table.runStepId)
+]);
+
 export const prCiRepairHeads = sqliteTable('pr_ci_repair_heads', {
   pullRequestId: text('pull_request_id').notNull().references(() => pullRequests.id),
   headSha: text('head_sha').notNull(),

@@ -545,7 +545,7 @@ function buildLayeredOrchestrator(input: {
 // ---------------------------------------------------------------------------
 
 describe('implementation.build convergence — production-path smoke', () => {
-  it('advances to implementation.human_review when reviewer is satisfied', async () => {
+  it('advances to implementation.testing_guide when reviewer is satisfied', async () => {
     await withScenario('ac-smoke-happy', async ({ runId, workspacesRoot, workspaceRepoRoot, databasePath }) => {
       const dispatcher = createFakeReviewedRoleDispatcher({
         workspaceRepoRoot,
@@ -556,7 +556,7 @@ describe('implementation.build convergence — production-path smoke', () => {
       });
       try {
         const result = await orchestrator.dispatch({ runId, tenant: TENANT });
-        expect(result.run.currentStep).toBe('implementation.human_review');
+        expect(result.run.currentStep).toBe('implementation.testing_guide');
 
         // Exactly one implementer + one reviewer call.
         expect(dispatcher.calls.map((c) => c.role)).toEqual(['implementer', 'reviewer']);
@@ -617,7 +617,7 @@ describe('implementation.build convergence — production-path smoke', () => {
       });
       try {
         const run = await orchestrator.dispatch({ runId, tenant: TENANT });
-        expect(run.run.currentStep).toBe('implementation.human_review');
+        expect(run.run.currentStep).toBe('implementation.testing_guide');
 
         // Convergence engine enforces read-only tool policy on all reviewer calls.
         const reviewerCalls = dispatcher.calls.filter((c) => c.role === 'reviewer');
@@ -807,7 +807,7 @@ describe('implementation.build convergence — production-path smoke', () => {
       });
       try {
         const run = await orchestrator.dispatch({ runId, tenant: TENANT });
-        expect(run.run.currentStep).toBe('implementation.human_review');
+        expect(run.run.currentStep).toBe('implementation.testing_guide');
 
         // Every call through the real dispatcher received altitude context.
         expect(capturedInputs.length).toBeGreaterThan(0);

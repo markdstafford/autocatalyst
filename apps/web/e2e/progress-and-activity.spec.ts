@@ -10,7 +10,7 @@ function row(page: Page, step: string, attempt?: number) {
 const scenarios = [
   { name: 'spec-review', fills: ['current', 'upcoming', 'upcoming'], wait: 'spec.human_review', step: 'spec.human_review',
     gates: ['spec.human_review', 'implementation.human_review', 'pr.human_review'],
-    tail: ['implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] },
+    tail: ['implementation.plan', 'implementation.build', 'implementation.testing_guide', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] },
   { name: 'implementation-review', fills: ['done', 'current', 'upcoming'], wait: 'implementation.human_review', step: 'implementation.human_review',
     gates: ['spec.human_review', 'implementation.human_review', 'pr.human_review'], tail: ['pr.finalize', 'pr.open', 'pr.human_review', 'done'] },
   { name: 'pr-open', fills: ['done', 'done', 'current'], wait: 'pr.human_review', step: 'pr.human_review',
@@ -19,7 +19,7 @@ const scenarios = [
     gates: ['implementation.human_review', 'pr.human_review'], tail: [] },
   { name: 'failed', fills: ['current', 'upcoming', 'upcoming'], wait: undefined, step: 'failed',
     gates: ['spec.human_review', 'implementation.human_review', 'pr.human_review'],
-    tail: ['spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review'] }
+    tail: ['spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.testing_guide', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review'] }
 ] as const;
 
 test('shows the five seeded paths and their durable attempts', async ({ browser, fakeServer, connectedStatePath }) => {

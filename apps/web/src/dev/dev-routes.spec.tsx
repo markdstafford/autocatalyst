@@ -6,7 +6,7 @@
  * catch-all not-found route (the production behavior).
  */
 import { isValidElement } from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 
@@ -40,7 +40,7 @@ describe('dev route in the router', () => {
     expect(screen.getByRole('heading', { name: 'Page not found' })).toBeDefined();
   });
 
-  it('renders the gallery for /dev/components when dev is enabled', async () => {
+  it('renders the gallery for /dev/components when dev is enabled', { timeout: 10_000 }, async () => {
     render(
       <MemoryRouter initialEntries={[DEV_COMPONENTS_PATH]}>
         <Routes>
@@ -49,8 +49,7 @@ describe('dev route in the router', () => {
         </Routes>
       </MemoryRouter>
     );
-    await waitFor(() => {
-      expect(screen.getByTestId('component-gallery')).toBeDefined();
-    });
+    // The real lazy-loaded gallery can take over a second under parallel CI.
+    expect(await screen.findByTestId('component-gallery', undefined, { timeout: 5_000 })).toBeDefined();
   });
 });

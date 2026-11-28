@@ -81,7 +81,7 @@ export function createScriptedClaudeAdapter(deps: ScriptedClaudeAdapterDependenc
       const resultSchemaId = input.structuredResultCapture?.schemaId ?? 'any';
 
       const issueFromInputs = readIssueNumberFromInputs(taskInputs);
-      const issueNumber = issueFromInputs ?? (deps.resolveIssueNumber !== undefined ? await deps.resolveIssueNumber(runId) : undefined);
+      const issueNumber = issueFromInputs ?? (step !== 'implementation.testing_guide' ? await deps.resolveIssueNumber?.(runId) : undefined);
 
       const launchSequence = await bumpLaunchCounter(deps.paths);
       const specAuthorPass = step === 'spec.author' && role !== 'reviewer' ? await bumpSpecAuthorPass(deps.paths, runId) : undefined;
@@ -111,8 +111,15 @@ export function createScriptedClaudeAdapter(deps: ScriptedClaudeAdapterDependenc
       }
 
       const review = taskInputs?.['specReview'] as { requiredFeedbackIds?: readonly string[] } | undefined;
+      const testingGuidePass = taskInputs?.['testingGuidePass'];
+      const required = taskInputs?.['requiredDispositions'];
+      const requiredBuildFeedbackIds = Array.isArray(required) ? required.flatMap(entry =>
+        entry && typeof entry.feedbackId === 'string' && entry.feedbackId.length > 0 ? [entry.feedbackId as string] : []
+      ) : [];
       const selection: ScriptedSessionSelection = {
         ...(review?.requiredFeedbackIds ? { requiredFeedbackIds: review.requiredFeedbackIds } : {}),
+        requiredBuildFeedbackIds,
+        ...(typeof testingGuidePass === 'number' && Number.isInteger(testingGuidePass) && testingGuidePass > 0 ? { testingGuidePass } : {}),
         step,
         workKind,
         ...(role !== undefined ? { role } : {}),
@@ -120,7 +127,7 @@ export function createScriptedClaudeAdapter(deps: ScriptedClaudeAdapterDependenc
         ...(issueNumber !== undefined ? { issueNumber } : {}),
         ...(specAuthorPass !== undefined ? { specAuthorPass } : {})
       };
-      const events = failed ? scriptedPrelude() : buildScriptedSessionEvents(selection);
+      const events = failed ? scriptedPrelude(step) : buildScriptedSessionEvents(selection);
       const base = createClaudeAgentAdapter({
         ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
         launchClaudeSession: launchScript({

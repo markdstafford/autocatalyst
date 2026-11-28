@@ -132,6 +132,7 @@ function makeRepos(overrides: Partial<{
     runSteps: {} as unknown as DomainRepositories['runSteps'],
     sessions: {} as unknown as DomainRepositories['sessions'],
     testResults: {} as unknown as DomainRepositories['testResults'],
+    testingGuides: {} as unknown as DomainRepositories['testingGuides'],
     runWorkspaceMetadata: {} as unknown as DomainRepositories['runWorkspaceMetadata']
   };
 }

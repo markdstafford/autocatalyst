@@ -12,6 +12,8 @@ export interface ScriptedSessionSelection {
   readonly issueNumber?: number;
   /** 1-based spec.author pass number (for deterministic revisions). */
   readonly specAuthorPass?: number;
+  readonly testingGuidePass?: number;
+  readonly requiredBuildFeedbackIds?: readonly string[];
   readonly requiredFeedbackIds?: readonly string[];
 }
 
@@ -49,9 +51,37 @@ export function buildScriptedReviewerResult(): Record<string, unknown> {
   return { status: 'satisfied' };
 }
 
-/** Implementer dispositions result with no carried-forward findings. */
-export function buildScriptedImplementerResult(): Record<string, unknown> {
-  return {};
+/** Disposition only the build feedback explicitly required for this round. */
+export function buildScriptedImplementerResult(required: readonly string[] = []): Record<string, unknown> {
+  return required.length === 0 ? {} : {
+    dispositions: [...new Set(required)].map(feedbackId => ({
+      feedbackId, disposition: 'fixed', summary: 'Addressed in the deterministic build revision.'
+    }))
+  };
+}
+
+const guideInstructions = [
+  'From the fake repository root, inspect the checked-out files:',
+  '```sh',
+  'git ls-files',
+  '```'
+].join('\n');
+
+function buildScriptedTestingGuide(pass: number): Record<string, unknown> {
+  return {
+    instructions: guideInstructions,
+    items: [
+      { text: 'A. Find README.md in the file list.', expected: 'README.md is listed.' },
+      { text: 'B. Open README.md.', expected: 'The file contains the fixture repository description.' },
+      { text: 'C. Find fake-implementer-round-1.txt.', expected: 'The scripted build file is present.' },
+      ...(pass === 1 ? [
+        { text: 'D. Open the scripted build file.', expected: 'It contains deterministic implementer output.' }
+      ] : [
+        { text: 'D. Check the first line of the scripted build file.', expected: 'It reads: Deterministic fake-mode implementer output for round 1.' },
+        { text: 'E. Inspect the checked-out file list for a testing guide.', expected: 'No testing guide is committed.' }
+      ])
+    ]
+  };
 }
 
 /** Pull-request finalize result that advances. */
@@ -80,8 +110,9 @@ export function selectScriptedResult(selection: ScriptedSessionSelection): Recor
     return buildScriptedReviewerResult();
   }
   if (selection.step === 'implementation.build' && selection.role === 'implementer') {
-    return buildScriptedImplementerResult();
+    return buildScriptedImplementerResult(selection.requiredBuildFeedbackIds);
   }
+  if (selection.step === 'implementation.testing_guide') return buildScriptedTestingGuide(selection.testingGuidePass ?? 1);
   if (selection.step === 'pr.finalize') {
     return buildScriptedPrFinalizeResult();
   }
@@ -93,11 +124,11 @@ export function scriptedTaskProgress(label: string, completed: number, total: nu
   return { type: 'tool_use', tool: { name: 'report_progress', input: { label, completed, total } } };
 }
 
-export function scriptedPrelude(): ClaudeNativeEvent[] {
+export function scriptedPrelude(step?: string): ClaudeNativeEvent[] {
   return [
     { type: 'assistant', content: 'Scripted fake-mode session.' },
     { type: 'tool_use', tool: { name: 'Read' } },
-    scriptedTaskProgress('Scripted work', 0, 1)
+    ...(step === 'implementation.testing_guide' ? [] : [scriptedTaskProgress('Scripted work', 0, 1)])
   ];
 }
 
@@ -112,7 +143,7 @@ export function buildScriptedSessionEvents(selection: ScriptedSessionSelection):
 
   if (isStructured(selection.resultSchemaId)) {
     return [
-      ...scriptedPrelude(),
+      ...scriptedPrelude(selection.step),
       {
         type: 'result',
         structuredOutput: result,
@@ -122,7 +153,7 @@ export function buildScriptedSessionEvents(selection: ScriptedSessionSelection):
   }
 
   return [
-    ...scriptedPrelude(),
+    ...scriptedPrelude(selection.step),
     {
       type: 'result',
       result: { output: JSON.stringify(result), is_error: false, ...usage }

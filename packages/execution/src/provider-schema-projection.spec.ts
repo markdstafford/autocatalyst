@@ -1,3 +1,5 @@
+import { TESTING_GUIDE_SCHEMA_ID, testingGuideAuthorResultSchema } from '@autocatalyst/api-contract';
+import { decodeTestingGuideOpenAIResult } from './structured-result-capture.js';
 import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 
@@ -396,4 +398,27 @@ it('gives every Claude output projection an object root accepted by the structur
     const projection = projectStepResultSchemaForProvider({ schemaId, schema: schemaFixtures[schemaId], target: 'claude_output_format' });
     expect((projection.schema as JsonSchema)['type']).toBe('object');
   }
+});
+
+describe('testing guide output projection', () => {
+  it.each(['claude_output_format', 'openai_agents_output_type'] as const)('projects only guide fields for %s', target => {
+    const projection = projectStepResultSchemaForProvider({ target, schemaId: TESTING_GUIDE_SCHEMA_ID, schema: testingGuideAuthorResultSchema });
+    expect(projection.schema).toMatchObject({
+      type: 'object', additionalProperties: false, required: ['instructions', 'items'],
+      properties: { items: { items: {
+        additionalProperties: false, required: target === 'openai_agents_output_type' ? ['text', 'expected'] : ['text']
+      } } }
+    });
+  });
+
+  it('decodes OpenAI nullable expected results without accepting extras or collapsing empty strings', () => {
+    const output = { instructions: 'Inspect the build.', items: [{ text: 'A', expected: null }, { text: 'A', expected: '' }] };
+    expect(testingGuideAuthorResultSchema.safeParse(output).success).toBe(false);
+    expect(testingGuideAuthorResultSchema.parse(decodeTestingGuideOpenAIResult(output))).toEqual({
+      instructions: output.instructions, items: [{ text: 'A' }, { text: 'A', expected: '' }]
+    });
+    expect(testingGuideAuthorResultSchema.safeParse(decodeTestingGuideOpenAIResult({
+      ...output, items: [{ text: 'A', expected: null, id: 'model-id' }]
+    })).success).toBe(false);
+  });
 });

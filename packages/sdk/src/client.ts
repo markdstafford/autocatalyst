@@ -1,3 +1,4 @@
+import { runTestingGuidePath, testingGuideSchema, type TestingGuide } from '@autocatalyst/api-contract';
 import {
   configurationRecordCollectionPath,
   configurationRecordListResponseSchema,
@@ -176,6 +177,7 @@ export interface ControlPlaneClient {
    * tokens or cost.tokens, for disjoint counts: compatibility zeros may be placeholders. */
   listRunSessions(id: string): Promise<RunSessionListResponse>;
   subscribeRunEvents(id: string, options?: RunEventsStreamOptions): Promise<RunEventsResponse>;
+  getRunTestingGuide(id: string): Promise<TestingGuide>;
   getRunSpec(id: string): Promise<RunSpecResponse>;
   createRunFeedback(id: string, request: CreateRunFeedbackRequest): Promise<Feedback>;
   listRunFeedback(id: string): Promise<RunFeedbackListResponse>;
@@ -595,6 +597,18 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         throw new ControlPlaneClientError(response.status, parsed);
       }
       return { kind: 'response' as const, response };
+    },
+
+    async getRunTestingGuide(id) {
+      const response = await fetchImplementation(
+        urlFor(baseUrl, runTestingGuidePath.replace(':id', encodeURIComponent(id))),
+        { method: 'GET', headers: protectedHeaders(bearerToken) }
+      );
+      await throwForError(response);
+      if (response.status !== 200) {
+        throw new Error(`Expected 200 from getRunTestingGuide, received ${response.status}.`);
+      }
+      return testingGuideSchema.parse(await parseJson(response));
     },
 
     async getRunSpec(id) {

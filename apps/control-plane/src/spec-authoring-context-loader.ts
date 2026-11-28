@@ -106,27 +106,7 @@ export async function loadSpecAuthorPromptInput(request: LoadSpecAuthorPromptInp
     if (request.tenantId !== undefined) assertTenant(message, request.tenantId, 'message', request.runId);
   }
 
-  // Preserve the issue snapshot already fetched by intake.
-  // A supplied reader below still refreshes it; production supplies no reader.
-  let linkedIssue: SpecAuthorLinkedIssueContext | undefined = run.trackedIssue !== undefined ? {
-    number: run.trackedIssue.number,
-    title: run.trackedIssue.title,
-    ...(run.trackedIssue.body !== undefined ? { body: run.trackedIssue.body } : {}),
-    ...(run.trackedIssue.labels !== undefined ? { labels: run.trackedIssue.labels } : {})
-  } : undefined;
-  if (request.tenantId !== undefined && request.issues !== undefined && run.trackedIssue?.number !== undefined) {
-    try {
-      const issue = await request.issues.read({ tenantId: request.tenantId, run, project, issueNumber: run.trackedIssue.number });
-      linkedIssue = {
-        number: issue.number ?? run.trackedIssue.number,
-        ...(issue.title !== undefined ? { title: issue.title } : {}),
-        ...(issue.body !== undefined ? { body: issue.body } : {}),
-        ...(issue.labels !== undefined ? { labels: issue.labels } : {})
-      };
-    } catch {
-      throw new SpecAuthoringContextLoadError('issue_read_failed', 'Issue metadata could not be loaded for spec authoring context.', toSafeDetails({ runId: request.runId, issueNumber: run.trackedIssue.number }));
-    }
-  }
+  const linkedIssue = await loadLinkedIssueContext(run, project, request.tenantId, request.issues);
 
   const text = requestTextFrom({ messages, ...(linkedIssue !== undefined ? { issue: linkedIssue } : {}), topicTitle: topic.title });
   if (text.trim().length === 0) {
@@ -152,4 +132,31 @@ export async function loadSpecAuthorPromptInput(request: LoadSpecAuthorPromptInp
     ...(linkedIssue !== undefined ? { linkedIssue } : {}),
     ...(revisionFeedback.length > 0 ? { revisionFeedback } : {})
   };
+}
+
+/** The intake issue snapshot, refreshed by the tenant-checked reader when one is supplied. */
+export async function loadLinkedIssueContext(
+  run: Run,
+  project: Project,
+  tenantId?: string,
+  issues?: IssueContextReader
+): Promise<SpecAuthorLinkedIssueContext | undefined> {
+  if (tenantId !== undefined) {
+    assertTenant(run, tenantId, 'run', run.id);
+    assertTenant(project, tenantId, 'project', run.id);
+  }
+  const issue = run.trackedIssue;
+  if (issue === undefined) return undefined;
+  if (tenantId === undefined || issues === undefined) {
+    const { number, title, body, labels } = issue;
+    return { number, title, ...(body !== undefined ? { body } : {}), ...(labels !== undefined ? { labels } : {}) };
+  }
+  try {
+    const { number, title, body, labels } = await issues.read({ tenantId, run, project, issueNumber: issue.number });
+    return { number: number ?? issue.number, ...(title !== undefined ? { title } : {}),
+      ...(body !== undefined ? { body } : {}), ...(labels !== undefined ? { labels } : {}) };
+  } catch {
+    throw new SpecAuthoringContextLoadError('issue_read_failed', 'Issue metadata could not be loaded for spec authoring context.',
+      toSafeDetails({ runId: run.id, issueNumber: issue.number }));
+  }
 }

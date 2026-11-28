@@ -903,6 +903,9 @@ describe('PR lifecycle integration: PR body from convergence-round folding', () 
       // the body must be sourced entirely from the folded cumulative summary.
       const unitOfWork: RunUnitOfWork = {
         run: async ({ run: r }) => {
+          if (r.currentStep === 'implementation.testing_guide') {
+            return { directive: 'advance', result: { instructions: 'Inspect the build.', items: [{ text: 'Check it manually.' }] } };
+          }
           if (r.currentStep === 'pr.finalize') {
             return {
               directive: 'advance',
@@ -950,6 +953,7 @@ describe('PR lifecycle integration: PR body from convergence-round folding', () 
         unitOfWork,
         autoDispatch: { enabled: true },
         runSteps: domainRepos.runSteps,
+        testingGuides: domainRepos.testingGuides,
         runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
         specFreezeDependencies,
         pullRequestOpenDependencies,
@@ -971,7 +975,7 @@ describe('PR lifecycle integration: PR body from convergence-round folding', () 
         // and the orchestrator folds them into a cumulative summary before advancing.
         await orchestrator.dispatch({ runId, tenant: 'tenant_dev' });
 
-        // Wait until auto-dispatch moves the run past implementation.build → implementation.human_review
+        // Wait until auto-dispatch moves the run past implementation.build → testing guide → implementation.human_review
         await waitFor(
           async () => {
             const r = await domainRepos.runs.findById(runId);

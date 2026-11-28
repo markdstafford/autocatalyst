@@ -74,6 +74,8 @@ export type {
   RunStepRepository,
   SessionRepository,
   TestResultRepository,
+  TestingGuideRepository,
+  StoredTestingGuide,
   TopicRepository
 } from './domain-repositories.js';
 
@@ -401,3 +403,5 @@ export * from './reviewed-handoff.js';
 export type { ReviewedAttemptPort } from './execution-run-unit-of-work.js';
 export * from './pr-ci-repair.js';
 export * from './pr-system-activity.js';
+
+export { assignTestingGuideItemIds, buildTestingGuidePrompt, type TestingGuidePromptInput } from './testing-guide.js';

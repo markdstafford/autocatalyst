@@ -166,6 +166,16 @@ async function waitForRevisedSpec(client: ControlPlaneClient, runId: string, tim
   throw new Error(`Timed out waiting for the revised spec for run ${runId}.`);
 }
 
+async function expectGuideHistory(client: ControlPlaneClient, runId: string, passes: number): Promise<void> {
+  const steps = (await client.listRunSteps(runId)).steps.map(step => step.step).filter(step => step.startsWith('implementation.') && step !== 'implementation.plan');
+  expect(steps).toEqual(Array.from({ length: passes }, () => [
+    'implementation.build', 'implementation.testing_guide', 'implementation.human_review'
+  ]).flat());
+  const sessions = (await client.listRunSessions(runId)).sessions.filter(session => session.step === 'implementation.testing_guide');
+  expect(sessions).toHaveLength(passes);
+  expect(sessions.every(session => session.role === 'implementer' && session.outcome === 'succeeded')).toBe(true);
+}
+
 describe('production entrypoint fake-mode wiring (spawned child process)', () => {
   let server: SpawnedServer | undefined;
   let client: ControlPlaneClient;
@@ -218,6 +228,20 @@ describe('production entrypoint fake-mode wiring (spawned child process)', () =>
     // Approve the spec gate, then the implementation gate, reaching the PR gate.
     await client.replyToRun(runId, { kind: 'approve', body: 'Approved spec.' });
     await waitForStep(client, runId, 'implementation.human_review');
+    const first = await client.getRunTestingGuide(runId);
+    expect(first.revision).toBe(1);
+    expect(first.items.map(item => item.text[0])).toEqual(['A', 'B', 'C', 'D']);
+    const feedback = await client.replyToRun(runId, { kind: 'feedback', title: 'Try again', body: 'Rerun the build.' });
+    await waitForStep(client, runId, 'implementation.human_review');
+    const second = await client.getRunTestingGuide(runId);
+    expect(second.revision).toBe(2);
+    expect(second.items.slice(0, 3)).toEqual(first.items.slice(0, 3));
+    expect(second.items.map(item => item.text[0])).toEqual(['A', 'B', 'C', 'D', 'E']);
+    expect(second.items.slice(3).every(item => !first.items.some(old => old.id === item.id))).toBe(true);
+    expect((await client.listRunFeedback(runId)).feedback).toContainEqual(expect.objectContaining({
+      id: feedback.classification.createdFeedbackId, status: 'addressed', target: 'implementation'
+    }));
+    await expectGuideHistory(client, runId, 2);
     await client.replyToRun(runId, { kind: 'approve', body: 'Approved implementation.' });
     await waitForStep(client, runId, 'pr.human_review');
 
@@ -230,6 +254,40 @@ describe('production entrypoint fake-mode wiring (spawned child process)', () =>
 
     await waitForStep(client, runId, 'done');
   }, 180_000);
+
+  it('seeds implementation review with a revision-one guide', async () => {
+    const { port, stateDir } = server!;
+    const { stdout } = await execFileAsync(process.execPath, [
+      join(CONTROL_PLANE_DIR, 'dist', 'src', 'fake', 'seed-fake.js'), '--scenario', 'implementation-review',
+      '--base-url', `http://127.0.0.1:${port}`, '--fake-state-dir', stateDir, '--json'
+    ], { cwd: REPO_ROOT, timeout: 60_000 });
+    const { runId } = JSON.parse(stdout.trim()) as { runId: string };
+    const guide = await client.getRunTestingGuide(runId);
+    expect(guide.revision).toBe(1);
+    expect(guide.items.map(item => item.text[0])).toEqual(['A', 'B', 'C', 'D']);
+  }, 90_000);
+
+  it('stores the first chore guide and recovers a first-pass guide failure without consuming a revision', async () => {
+    const chore = await startRun(client, projectId, 4);
+    await waitForStep(client, chore, 'implementation.human_review');
+    expect((await client.getRunTestingGuide(chore)).revision).toBe(1);
+    await expectGuideHistory(client, chore, 1);
+
+    const paths = resolveFakeStatePaths(server!.stateDir);
+    const controlFile = failureFile(paths, 10);
+    await writeFile(controlFile, JSON.stringify({ step: 'implementation.testing_guide' }), 'utf-8');
+    const runId = await startRun(client, projectId, 10);
+    await waitForStep(client, runId, 'failed');
+    await access(`${controlFile}.fired`);
+    await expect(client.getRunTestingGuide(runId)).rejects.toMatchObject({ status: 404 });
+    expect((await client.recoverRun(runId)).mode).toBe('resume');
+    await waitForStep(client, runId, 'implementation.human_review');
+    const guide = await client.getRunTestingGuide(runId);
+    expect(guide.revision).toBe(1);
+    expect(guide.items.map(item => item.text[0])).toEqual(['A', 'B', 'C', 'D']);
+    const occurrences = (await client.listRunSteps(runId)).steps.filter(step => step.step === 'implementation.testing_guide');
+    expect(new Set(occurrences.map(step => step.id)).size).toBe(2);
+  }, 90_000);
 
   it('fails a run when a failure file targets spec.author', async () => {
     const stateDir = server!.stateDir;

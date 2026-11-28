@@ -18,6 +18,7 @@ const expectedCatalog = {
   'spec.human_review': { phase: 'spec', kind: 'gate', waitingOn: 'human', roles: [] },
   'implementation.plan': { phase: 'implementation', kind: 'work', waitingOn: 'ai', roles: ['implementer'] },
   'implementation.build': { phase: 'implementation', kind: 'work', waitingOn: 'ai', roles: ['implementer', 'reviewer'] },
+  'implementation.testing_guide': { phase: 'implementation', kind: 'work', waitingOn: 'ai', roles: ['implementer'] },
   'implementation.awaiting_input': { phase: 'implementation', kind: 'pause', waitingOn: 'human', roles: [] },
   'implementation.human_review': { phase: 'implementation', kind: 'gate', waitingOn: 'human', roles: [] },
   'docs.update': { phase: 'docs', kind: 'work', waitingOn: 'ai', roles: ['implementer'] },

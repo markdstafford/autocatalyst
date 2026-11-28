@@ -18,7 +18,10 @@ import {
   specReviewerResultSchema,
   reviewedSpecAuthorResultSchema,
   specAuthorFrontmatterSchema,
-  specAuthorResultSchema
+  specAuthorResultSchema,
+  testingGuideAuthorResultSchema,
+  TESTING_GUIDE_RESULT_FILE,
+  TESTING_GUIDE_SCHEMA_ID
 } from '@autocatalyst/api-contract';
 
 export interface StepResultContractDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
@@ -103,6 +106,15 @@ export const SYSTEM_SPEC_AUTHOR_SPECCED_BY = 'autocatalyst' as const;
 export const REVIEWER_RESULT_SCHEMA_ID = 'autocatalyst.reviewer_result.v1' as const;
 export const IMPLEMENTER_DISPOSITIONS_SCHEMA_ID = 'autocatalyst.implementer_dispositions.v1' as const;
 export const PR_FINALIZE_SCHEMA_ID = 'autocatalyst.pr_finalize.v1' as const;
+
+export function createTestingGuideResultContract(): StepResultContractDefinition<typeof testingGuideAuthorResultSchema> {
+  return {
+    step: 'implementation.testing_guide',
+    schemaId: TESTING_GUIDE_SCHEMA_ID,
+    schema: testingGuideAuthorResultSchema,
+    resultFile: TESTING_GUIDE_RESULT_FILE
+  };
+}
 
 export interface SpecAuthorResultContractOptions {
   readonly trustedSpeccedBy?: string;

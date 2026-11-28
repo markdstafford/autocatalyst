@@ -1,3 +1,4 @@
+import { runTestingGuidePath, testingGuideSchema } from './testing-guide.js';
 import {
   OpenAPIRegistry,
   OpenApiGeneratorV3,
@@ -190,6 +191,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
   registry.register('RunStateTransitionEvent', runStateTransitionEventSchema);
   const RunIdParams = registry.register('RunIdParams', runIdParamsSchema);
   const RunStepListResponse = registry.register('RunStepListResponse', runStepListResponseSchema);
+  const TestingGuide = registry.register('TestingGuide', testingGuideSchema);
   const RunSpecResponse = registry.register('RunSpecResponse', runSpecResponseSchema);
   const CreateRunFeedbackRequest = registry.register('CreateRunFeedbackRequest', createRunFeedbackRequestSchema);
   const RunFeedbackListResponse = registry.register('RunFeedbackListResponse', runFeedbackListResponseSchema);
@@ -600,6 +602,20 @@ export function generateOpenApiDocument(): OpenApiDocument {
       [getRunSpecSuccessStatusCode]: jsonResponse(RunSpecResponse, 'Current spec for the run.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       404: jsonResponse(ErrorResponse, 'Run or spec not found.'),
+      500: jsonResponse(ErrorResponse, 'Internal server error.')
+    }
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: runTestingGuidePath.replace(':id', '{id}'),
+    tags: ['runs'],
+    request: { params: RunIdParams },
+    responses: {
+      200: jsonResponse(TestingGuide, 'Latest testing guide for the run.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      403: jsonResponse(ErrorResponse, 'Forbidden.'),
+      404: jsonResponse(ErrorResponse, 'Run or testing guide not found.'),
       500: jsonResponse(ErrorResponse, 'Internal server error.')
     }
   });

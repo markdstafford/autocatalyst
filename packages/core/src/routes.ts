@@ -1,3 +1,4 @@
+import { runTestingGuidePath, testingGuideSchema } from '@autocatalyst/api-contract';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { emptyRunActionRequestSchema, setRunStepRequestSchema, renameRunRequestSchema, runActionResponseSchema,
   type RunActionResponse } from '@autocatalyst/api-contract';
@@ -977,6 +978,38 @@ export async function registerControlPlaneRoutes(
           runId: params.id
         });
         await reply.status(getRunSpecSuccessStatusCode).send(runSpecResponseSchema.parse(result));
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(request, reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // GET /v1/runs/:id/testing-guide
+    protectedApp.get(runTestingGuidePath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run_testing_guide.read', (request) => ({
+        kind: 'run_testing_guide' as const,
+        id: (request.params as { id: string }).id,
+        path: runTestingGuidePath
+      }))
+    }, async (request, reply) => {
+      let params: RunIdParams;
+      try {
+        params = runIdParamsSchema.parse(request.params);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const result = await dependencies.controlPlane.getRunTestingGuide({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id
+        });
+        await reply.status(200).send(testingGuideSchema.parse(result));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
           await handleControlPlaneServiceError(request, reply, error);

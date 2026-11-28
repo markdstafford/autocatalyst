@@ -182,6 +182,11 @@ describe('OpenAPI generation', () => {
     expect(operation?.responses?.['404']).toBeDefined();
   });
 
+  it('documents the authorized testing guide read', () => {
+    const responses = generateOpenApiDocument().paths['/v1/runs/{id}/testing-guide']?.get?.responses;
+    for (const status of [200, 401, 403, 404, 500]) expect(responses?.[status]).toBeDefined();
+  });
+
   it('documents POST /v1/runs/{id}/feedback', () => {
     const document = generateOpenApiDocument();
     const operation = document.paths['/v1/runs/{id}/feedback']?.post as

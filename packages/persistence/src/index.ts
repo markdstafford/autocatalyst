@@ -14,6 +14,7 @@ export {
   DrizzleRunWorkspaceMetadataRepository,
   DrizzleSessionRepository,
   DrizzleTestResultRepository,
+  DrizzleTestingGuideRepository,
   DrizzleTopicRepository,
   createDrizzleDomainRepositories,
   defaultRunListLimit,

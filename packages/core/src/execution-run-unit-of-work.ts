@@ -190,7 +190,8 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
 
       const privateSpecResult = (input as RunRoleWorkInput).specReview !== undefined;
       const reviewed = options.reviewedAttempt?.(context);
-      if (modeResolution.mode === 'direct' && (privateSpecResult || reviewed || input.run.currentStep === 'pr.finalize')) {
+      const guideAuthor = input.run.currentStep === 'implementation.testing_guide';
+      if (modeResolution.mode === 'direct' && (privateSpecResult || reviewed || guideAuthor || input.run.currentStep === 'pr.finalize')) {
         return { workResult: { directive: 'fail', reason: 'route_mode_mismatch' } };
       }
       if (modeResolution.mode === 'direct') {
@@ -331,7 +332,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       let retriesUsed = 0;
       let fallback = false;
       let attemptId: string | undefined;
-      const finalReview = input.run.currentStep === 'pr.finalize';
+      const freshOnly = guideAuthor || input.run.currentStep === 'pr.finalize';
       let nativeMode: NativeConversationTurn['mode'] | undefined;
       const finish = async (accepted: boolean, checkpoint?: JsonValue, beforeLaunch?: boolean) => {
         if (attemptId && reviewed) await reviewed.finish({ attemptId, accepted,
@@ -340,7 +341,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       // Bounded session-retry loop. Breaks out on a terminal result (advance/needs_input/fail) and
       // returns a fail directive when a transient session failure cannot be recovered.
       for (;;) {
-        attemptId = reviewed || finalReview ? `sess_${randomUUID()}` : undefined;
+        attemptId = reviewed || freshOnly ? `sess_${randomUUID()}` : undefined;
         nativeMode = undefined;
         const id = attemptId;
         const events = options.execute.execute({ context, correlationId: input.runId,
@@ -353,7 +354,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
               nativeMode = native?.mode;
               return native;
             }
-          } : finalReview ? options.prepareFreshConversation
+          } : freshOnly ? options.prepareFreshConversation
             ? { prepareConversation: options.prepareFreshConversation }
             : { nativeConversation: { mode: 'fresh_only', verifiedNonPersistence: false } as const }
           : {}),
