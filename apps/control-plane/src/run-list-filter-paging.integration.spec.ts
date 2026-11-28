@@ -232,8 +232,10 @@ describe('GET /v1/runs filter + paging production wiring', () => {
     await withTempDatabasePath(async (databasePath) => {
       const projectId = await seedProject(databasePath, 'Human Gate Project');
       // Auto-advance each dispatched step; a chore run walks intake → implementation.plan →
-      // implementation.build → implementation.human_review (a human gate) with no model calls.
-      const unitOfWork: RunUnitOfWork = { run: async () => ({ directive: 'advance' }) };
+      // implementation.build → implementation.testing_guide → implementation.human_review (a human gate) with no model calls.
+      const unitOfWork: RunUnitOfWork = { run: async ({ run }) => run.currentStep === 'implementation.testing_guide'
+            ? { directive: 'advance', result: { instructions: 'Inspect the build.', items: [{ text: 'Check it manually.' }] } }
+            : { directive: 'advance' } };
       const app = await createControlPlaneServer({
         autoDispatch: { enabled: true },
         databasePath,

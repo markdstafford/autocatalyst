@@ -134,6 +134,24 @@ describe('createRunWorkspaceGitPort', () => {
     return stdout.trim();
   }
 
+  it('reads patches at the same pinned head, with a bounded prefix for oversized diffs', async () => {
+    const port = createRunWorkspaceGitPort({ workspacesRoot: tmpdir() });
+    const baseRef = await commitSingleFile(repoDir, 'edited.txt', 'before\n', 'base');
+    await writeFile(join(repoDir, 'edited.txt'), 'after\n');
+    const headRef = await commitSingleFile(repoDir, 'added.txt', 'new\n', 'build');
+    const diff = { workspaceRepoRoot: repoDir, baseRef, headRef };
+    expect(await port.readHead(repoDir)).toBe(headRef);
+    expect(await port.getDiffText(diff)).toContain('-before\n+after');
+    expect(await port.getDiffText(diff)).toContain('+++ b/added.txt');
+    expect(await port.getDiffText({ ...diff, baseRef: headRef })).toBe('');
+    await expect(port.getDiffText({ ...diff, baseRef: '--stat' })).rejects.toThrow('changed_files_ref_invalid');
+    await expect(port.getDiffText({ ...diff, workspaceRepoRoot: '/outside' })).rejects.toThrow('workspace_containment_violation');
+    await expect(port.getDiffText({ ...diff, baseRef: 'missing-ref' })).rejects.toThrow('testing_guide_diff_failed');
+    await commitSingleFile(repoDir, 'large.txt', 'x'.repeat(2_000_000), 'large patch');
+    expect(Buffer.byteLength(await port.getDiffText({ workspaceRepoRoot: repoDir, baseRef: headRef }))).toBe(200_001);
+    expect(await port.getChangedFiles({ workspaceRepoRoot: repoDir, baseRef: headRef })).toEqual([{ path: 'large.txt', status: 'added' }]);
+  });
+
   it('captureCheckpointRef creates ref under refs/autocatalyst/runs/<runId>/implementation.build/<altitude>', async () => {
     const port = createRunWorkspaceGitPort({ workspacesRoot: tmpdir() });
     const sha = await commitSingleFile(repoDir, 'layout.md', 'layout contents', 'initial');

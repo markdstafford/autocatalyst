@@ -1,3 +1,4 @@
+import { TESTING_GUIDE_SCHEMA_ID } from '@autocatalyst/api-contract';
 import type { CodexAccountingAnomaly } from './codex-usage.js';
 import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -583,6 +584,11 @@ export function createCodexAgentAdapter(
       // ----------------------------------------------------------------
       const inferenceMapping = buildCodexConfig(profile, supportedInference);
 
+      // The native App Server exposes file inspection through a shell. Do not
+      // widen this step's explicit Read/Glob/Grep-only policy to that tool.
+      if (input.structuredResultCapture?.schemaId === TESTING_GUIDE_SCHEMA_ID) {
+        throw new UnsupportedProviderCapabilityError('tool_policy_unsupported', 'Codex does not support the testing guide tool policy.');
+      }
       const role = resolveRole(input);
       const sandbox = isReviewedSpecCapture(input.structuredResultCapture) ? 'read-only' : sandboxForRole(role);
       if (!acceptedSandboxValues.has(sandbox)) {

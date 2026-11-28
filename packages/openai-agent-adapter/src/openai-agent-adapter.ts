@@ -1,10 +1,11 @@
+import { createTestingGuideTools } from './testing-guide-tools.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { cp, lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { Runner, OpenAIProvider, tool, MaxTurnsExceededError } from '@openai/agents';
+import { Agent, Runner, OpenAIProvider, tool, MaxTurnsExceededError } from '@openai/agents';
 import {
   SandboxAgent,
   Manifest,
@@ -17,7 +18,7 @@ import {
   compaction as sdkCompaction
 } from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
-import type { RunItem } from '@openai/agents';
+import type { AgentOutputType, RunItem } from '@openai/agents';
 import type { SandboxClient, SandboxSessionLike } from '@openai/agents/sandbox';
 import OpenAI from 'openai';
 import { z } from 'zod/v4';
@@ -45,6 +46,8 @@ import {
   notifyToolInputSchema,
   projectStepResultSchemaForProvider,
   isReviewedSpecCapture,
+  isTestingGuideCapture,
+  decodeTestingGuideOpenAIResult,
   decodeSpecRoleProviderResult,
   ProviderProtocolError,
   reportProgressToolInputSchema,
@@ -1013,6 +1016,19 @@ function isRunItemStreamEvent(event: { readonly type: string; readonly item?: Ru
   return event.type === 'run_item_stream_event' && event.item !== undefined;
 }
 
+class TestingGuideAgent extends Agent<unknown, AgentOutputType<unknown>> {
+  override processFinalOutput(output: string) {
+    try {
+      return super.processFinalOutput(output);
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new ProviderProtocolError('structured_result_invalid', 'The guide transport did not return JSON.');
+      }
+      throw error;
+    }
+  }
+}
+
 function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome {
   // When a structured result is configured, wrap the projection schema as a
   // JsonSchemaDefinition so the OpenAI Agents SDK enforces structured output.
@@ -1042,21 +1058,22 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
         sdkSkills({ skills: input.skillDescriptors.map((s) => ({ ...s })) })
       ]
     : [];
-  const sandboxAgentConfig = {
+  const guide = isTestingGuideCapture(input.structuredResult?.capture);
+  const agentConfig = {
     name: 'autocatalyst-openai-agent',
     model: input.model,
     instructions: input.instructions,
-    ...(hasRuntimeSkills
-      ? { capabilities }
-      : {
-          defaultManifest: input.manifest,
-          tools: input.tools
-        }),
     ...(Object.keys(input.modelSettings).length > 0 ? { modelSettings: input.modelSettings } : {}),
     ...outputTypeOption
-  } as ConstructorParameters<typeof SandboxAgent>[0];
-
-  const agent = new SandboxAgent(sandboxAgentConfig) as SandboxAgent;
+  };
+  // SandboxAgent normally installs native shell and filesystem capabilities.
+  // Guide tools inspect the workspace directly without introducing those capabilities.
+  const agent = guide
+    ? new TestingGuideAgent({ ...agentConfig, tools: input.tools } as ConstructorParameters<typeof Agent>[0])
+    : new SandboxAgent({
+      ...agentConfig,
+      ...(hasRuntimeSkills ? { capabilities } : { defaultManifest: input.manifest, tools: input.tools })
+    } as ConstructorParameters<typeof SandboxAgent>[0]);
 
   // Per-session Runner bound to the per-session model provider via RunConfig.
   // This is the ONLY place the model provider is set — never through any of the
@@ -1100,7 +1117,10 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
             ...(input.modelMemoryState.conversationId !== undefined ? { conversationId: input.modelMemoryState.conversationId } : {})
           }
         : {};
-      const stream = await runner.run(agent, input.prompt, { sandbox: { session: input.session }, stream: true, maxTurns: OPENAI_AGENT_MAX_TURNS, ...continuityOptions }) as unknown as StreamedRunnerRunView;
+      const stream = await runner.run(agent, input.prompt, {
+        ...(!guide ? { sandbox: { session: input.session } } : {}),
+        stream: true, maxTurns: OPENAI_AGENT_MAX_TURNS, ...continuityOptions
+      }) as unknown as StreamedRunnerRunView;
 
       failureStage = 'sdk_stream';
       for await (const event of stream) {
@@ -1134,6 +1154,10 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
         ...(responsesContinuity !== undefined ? { responsesContinuity } : {})
       });
     } catch (err) {
+      if (err instanceof ProviderProtocolError) {
+        rejectResult(err);
+        throw err;
+      }
       const shaped = (err ?? {}) as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
       const classificationInput = {
         ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
@@ -1284,6 +1308,13 @@ export function createOpenAIAgentAdapter(
         structuredResult = createOpenAIStructuredResultConfiguration(input.structuredResultCapture);
       }
       const reviewedSpec = isReviewedSpecCapture(input.structuredResultCapture);
+      const testingGuide = isTestingGuideCapture(input.structuredResultCapture);
+      if (testingGuide) {
+        const tools = input.runInput.environment.toolPolicy.allowedTools;
+        if (tools.length !== 3 || !['Read', 'Glob', 'Grep'].every(tool => tools.includes(tool))) {
+          throw new UnsupportedProviderCapabilityError('tool_policy_unsupported', 'Testing guide requires Read, Glob, and Grep only.');
+        }
+      }
       const openAIOutputTypeStructuredResult = shouldUseOpenAIOutputType(structuredResult, input.telemetryContext.role)
         ? structuredResult
         : undefined;
@@ -1368,7 +1399,7 @@ export function createOpenAIAgentAdapter(
         sandboxHandle = await sandboxClientFactory({
           workspace,
           snapshot,
-          ...(reviewedSpec ? { workspaceReadOnly: true } : {}),
+          ...(reviewedSpec || testingGuide ? { workspaceReadOnly: true } : {}),
           environment: safeEnvironment,
           telemetryContext: input.telemetryContext,
           skillMounts: skillMaterialization.mounts
@@ -1435,7 +1466,8 @@ export function createOpenAIAgentAdapter(
       });
 
       const inferenceMapping = mapInferenceSettings(input.profile);
-      const tools = reviewedSpec && input.telemetryContext.role === 'reviewer' ? [] : createProgressTools();
+      const tools = testingGuide ? createTestingGuideTools(workspace.repoRoot)
+        : reviewedSpec && input.telemetryContext.role === 'reviewer' ? [] : createProgressTools();
 
       // The manifest the run driver hands to the SandboxAgent mirrors the one the
       // client used to open the session, so defaultManifest matches the session
@@ -1446,7 +1478,7 @@ export function createOpenAIAgentAdapter(
         workspace,
         safeEnvironment,
         skillMaterialization.mounts,
-        reviewedSpec || input.telemetryContext.role === 'reviewer'
+        reviewedSpec || testingGuide || input.telemetryContext.role === 'reviewer'
       );
       const runManifest = sandboxHandle.manifest ?? manifest;
 
@@ -1492,7 +1524,7 @@ export function createOpenAIAgentAdapter(
         session: sandboxHandle.session,
         modelProvider,
         modelSettings: inferenceMapping.mapped,
-        ...(skillDescriptors.length > 0 ? { skillDescriptors } : {}),
+        ...(!testingGuide && skillDescriptors.length > 0 ? { skillDescriptors } : {}),
         ...(openAIOutputTypeStructuredResult !== undefined ? { structuredResult: openAIOutputTypeStructuredResult } : {}),
         ...(modelMemoryState !== undefined ? { modelMemoryState } : {})
       });
@@ -1584,7 +1616,8 @@ export function createOpenAIAgentAdapter(
             if (openAIOutputTypeStructuredResult !== undefined) {
               // Structured capture: use parsed output, not prose
               failureStage = 'result_write';
-              await writeStructuredResultFile(input.runInput.environment, openAIOutputTypeStructuredResult, terminal.output);
+              await writeStructuredResultFile(input.runInput.environment, openAIOutputTypeStructuredResult,
+                testingGuide ? decodeTestingGuideOpenAIResult(terminal.output) : terminal.output);
             } else if (structuredResult !== undefined) {
               if (input.telemetryContext.role === 'reviewer' && structuredResult.capture.step === 'implementation.build') {
                 // Reviewers are read-only and record their verdict from the final

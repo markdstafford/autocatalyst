@@ -239,6 +239,9 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
       }
       return { sessions: [...sessions] };
     },
+    async getRunTestingGuide() {
+      throw notFoundError();
+    },
     async getRunSpec(): Promise<RunSpecResponse> {
       counts.spec += 1;
       await gated();

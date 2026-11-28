@@ -1,3 +1,4 @@
+import { TESTING_GUIDE_SCHEMA_ID, testingGuideAuthorResultSchema } from '@autocatalyst/api-contract';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, mkdir, readdir, readFile, symlink, writeFile, rm } from 'node:fs/promises';
@@ -1786,6 +1787,36 @@ describe('createOpenAIAgentAdapter — structured result capture', () => {
     expect(failureLog?.fields['protocolErrorCode']).toBe('structured_result_invalid');
     expect(JSON.stringify(failureLog)).not.toContain(FAKE_SECRET);
   });
+  it('offers only read tools and decodes the guide from strict transport output', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-openai-guide-'));
+    try {
+      const output = { instructions: 'Inspect the build.', items: [{ text: 'Check it.', expected: null }] };
+      const runAgentSession = vi.fn<OpenAIRunAgentSession>().mockReturnValue({
+        items: [], result: Promise.resolve({ directive: 'advance', output })
+      });
+      const sandboxClientFactory = vi.fn(() => fakeSandboxHandle());
+      const adapter = createOpenAIAgentAdapter({ sandboxClientFactory, runAgentSession });
+      const input = makeSessionInput('scratch_only', { scratchRoot: scratchDir });
+      const session = await adapter.startSession({
+        ...input, telemetryContext: { ...input.telemetryContext, step: 'implementation.testing_guide' },
+        runInput: { ...input.runInput, environment: { ...input.runInput.environment, toolPolicy: {
+          ...input.runInput.environment.toolPolicy, allowedTools: ['Read', 'Glob', 'Grep']
+        } } },
+        structuredResultCapture: {
+          step: 'implementation.testing_guide', schemaId: TESTING_GUIDE_SCHEMA_ID, schema: testingGuideAuthorResultSchema,
+          resultFile: 'testing-guide-result-sess_test.json', required: true
+        }
+      });
+      await collectEvents(session.events);
+      expect(sandboxClientFactory).toHaveBeenCalledWith(expect.objectContaining({ workspaceReadOnly: true }));
+      expect(runAgentSession.mock.calls[0]?.[0].tools.map(tool => tool.name)).toEqual(['Read', 'Glob', 'Grep']);
+      expect(JSON.parse(await readFile(path.join(scratchDir, 'testing-guide-result-sess_test.json'), 'utf8')))
+        .toEqual({ instructions: 'Inspect the build.', items: [{ text: 'Check it.' }] });
+    } finally {
+      await rm(scratchDir, { recursive: true, force: true });
+    }
+  });
+
   it('writes structured result JSON and ignores prose finalOutput', async () => {
     const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-openai-structured-'));
     try {

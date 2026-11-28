@@ -61,6 +61,8 @@ it('enforces operator policy, cancels before session release, archives without l
         } else if (run.currentStep === 'implementation.build') {
           buildEntered.resolve();
           await buildRelease.promise;
+        } else if (run.currentStep === 'implementation.testing_guide') {
+          return { directive: 'advance', result: { instructions: 'Inspect the build.', items: [{ text: 'Check it manually.' }] } };
         } else {
           throw new Error('Unexpected dispatch.');
         }
@@ -216,7 +218,9 @@ it('enforces operator policy, cancels before session release, archives without l
     expect(forward.statusCode).toBe(400);
     expect(forward.json().error.details.reason).toMatch(/not strictly earlier/);
     buildRelease.resolve();
-    await vi.waitFor(async () => expect((await request('GET', repeatBase)).json().currentStep).toBe('implementation.human_review'));
+    await vi.waitFor(async () => expect((await request('GET', repeatBase)).json().currentStep).toBe('implementation.testing_guide'));
+    await service.tick({ principal: owner, tenant, runId: second.run.id });
+    expect((await request('GET', repeatBase)).json().currentStep).toBe('implementation.human_review');
     const steps = (await request('GET', repeatBase + '/steps')).json().steps;
     expect(steps).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: second.runStep.id, endedAt: expect.any(String), occurrence: { index: 3, attempt: 1 } }),
@@ -225,7 +229,8 @@ it('enforces operator policy, cancels before session release, archives without l
     expect((await request('GET', repeatBase + '/sessions')).json().sessions).toHaveLength(1);
     expect(await replay(repeatBase)).toEqual([
       expect.objectContaining({ transition: { directive: 'set_step', fromStep: 'implementation.human_review', toStep: 'implementation.build' } }),
-      expect.objectContaining({ transition: { directive: 'advance', fromStep: 'implementation.build', toStep: 'implementation.human_review' } })
+      expect.objectContaining({ transition: { directive: 'advance', fromStep: 'implementation.build', toStep: 'implementation.testing_guide' } }),
+      expect.objectContaining({ transition: { directive: 'advance', fromStep: 'implementation.testing_guide', toStep: 'implementation.human_review' } })
     ]);
   } finally {
     specRelease.resolve();
@@ -261,7 +266,7 @@ it.each([
     feedback: repos.feedback,
     git: {
       commitFiles, captureCheckpointRef: vi.fn(), readFileAtRef: vi.fn(),
-      listFilesAtRef: vi.fn(), getChangedFiles: vi.fn(), reviewerPolicy: defaultReviewerWorkspacePolicy
+      listFilesAtRef: vi.fn(), getChangedFiles: vi.fn(), getDiffText: vi.fn(), reviewerPolicy: defaultReviewerWorkspacePolicy
     },
     routing: {
       resolveAgentRoute: vi.fn(), resolveDirectRoute: vi.fn(), resolveDistinctAgentRoutes: vi.fn().mockResolvedValue({

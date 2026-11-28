@@ -1,3 +1,4 @@
+import type { TestingGuideRepository } from './domain-repositories.js';
 import { describe, expect, it, vi } from 'vitest';
 import type {
   Artifact,
@@ -244,6 +245,7 @@ function makeService(options?: {
   events?: RunEventStore | RunEventSubscriber;
   policy?: PolicyDecisionPoint;
   artifacts?: ArtifactRepository;
+  testingGuides?: TestingGuideRepository;
   runWorkspaceMetadata?: RunWorkspaceMetadataRepository;
   workspaceFilesystem?: WorkspaceFileSystemPort;
   projects?: ProjectRepository;
@@ -256,6 +258,7 @@ function makeService(options?: {
     events: (options?.events ?? new InMemoryRunEventBus()) as RunEventStore,
     policy: options?.policy ?? permissivePolicyDecisionPoint,
     artifacts: options?.artifacts ?? makeFakeArtifactRepository(),
+    ...(options?.testingGuides ? { testingGuides: options.testingGuides } : {}),
     feedback: makeFakeFeedbackRepository(),
     runWorkspaceMetadata: options?.runWorkspaceMetadata ?? makeFakeRunWorkspaceMetadataRepository(),
     workspaceFilesystem: options?.workspaceFilesystem ?? makeFakeWorkspaceFilesystem(),
@@ -1485,5 +1488,42 @@ describe('DefaultControlPlaneService.reconcilePullRequests', () => {
     await expect(
       service.reconcilePullRequests({ principal: reconcilePrincipal, tenant: 'tenant_1' })
     ).rejects.toMatchObject({ code: 'persistence_failed' });
+  });
+});
+
+describe('getRunTestingGuide', () => {
+  const input = { principal, tenant: 'tenant_1', runId: 'run_1' };
+  it('uses the testing guide policy before any repository call', async () => {
+    const findById = vi.fn(), findLatestByRun = vi.fn();
+    const authorize = vi.fn().mockResolvedValue({ allowed: false });
+    const service = makeService({ runs: makeFakeRunRepo({ findById }), testingGuides: { findLatestByRun, create: vi.fn() },
+      policy: { authorize } });
+    await expect(service.getRunTestingGuide(input)).rejects.toMatchObject({ code: 'forbidden' });
+    expect(authorize).toHaveBeenCalledExactlyOnceWith({
+      principal, action: 'run_testing_guide.read', resource: { kind: 'run_testing_guide', id: 'run_1', path: '/v1/runs/:id/testing-guide' }
+    });
+    expect(findById).not.toHaveBeenCalled();
+    expect(findLatestByRun).not.toHaveBeenCalled();
+  });
+
+  it.each([null, makeRun({ tenant: 'tenant_other' }), makeRun({ workKind: 'question' }), makeRun({ workKind: 'file_issue' }), makeRun()])(
+    'hides absent, missing and cross-tenant testing guides', async run => {
+      const findLatestByRun = vi.fn().mockResolvedValue(null);
+      const service = makeService({ runs: makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(run) }),
+        testingGuides: { findLatestByRun, create: vi.fn() } });
+      await expect(service.getRunTestingGuide(input)).rejects.toMatchObject({ code: 'not_found' });
+      expect(findLatestByRun).toHaveBeenCalledTimes(run?.tenant === input.tenant ? 1 : 0);
+    }
+  );
+
+  it('returns only the public guide with no workspace available', async () => {
+    const guide = { id: 'guide', runId: input.runId, revision: 2, instructions: 'Run the build.',
+      items: [{ id: 'item', text: 'Test it.' }], createdAt: timestamp };
+    const findLatestByRun = vi.fn().mockResolvedValue({ ...guide, runStepId: 'private' });
+    const workspace = makeFakeRunWorkspaceMetadataRepository();
+    const service = makeService({ runs: makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(makeRun()) }),
+      testingGuides: { findLatestByRun, create: vi.fn() }, runWorkspaceMetadata: workspace });
+    await expect(service.getRunTestingGuide(input)).resolves.toEqual(guide);
+    expect(workspace.findByRunId).not.toHaveBeenCalled();
   });
 });

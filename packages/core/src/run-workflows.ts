@@ -26,9 +26,9 @@ function advanceTransitions(steps: readonly RunStepId[]): WorkflowTransitionTabl
   ) as WorkflowTransitionTable;
 }
 
-const featureSteps = ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] as const satisfies readonly RunStepId[];
-const bugSteps = ['intake', 'spec.author', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] as const satisfies readonly RunStepId[];
-const choreSteps = ['intake', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] as const satisfies readonly RunStepId[];
+const featureSteps = ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.testing_guide', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] as const satisfies readonly RunStepId[];
+const bugSteps = ['intake', 'spec.author', 'implementation.plan', 'implementation.build', 'implementation.testing_guide', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] as const satisfies readonly RunStepId[];
+const choreSteps = ['intake', 'implementation.plan', 'implementation.build', 'implementation.testing_guide', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] as const satisfies readonly RunStepId[];
 const fileIssueSteps = ['intake', 'spec.author', 'issues.file', 'done'] as const satisfies readonly RunStepId[];
 const questionSteps = ['intake', 'question.answer', 'done'] as const satisfies readonly RunStepId[];
 

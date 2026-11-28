@@ -63,6 +63,36 @@ async function createProjectConversationAndTopic(
 }
 
 describe('DrizzleDomainRepositories round-trip', () => {
+  it('stores scoped testing guide revisions and treats a repeated occurrence as immutable', async () => {
+    await withRepositories(async (repos, database) => {
+      const tenant = owner.tenantId;
+      const { topic } = await createProjectConversationAndTopic(repos, { tenant, owner, identity: 'guides', title: 'Guides' });
+      const run = await repos.runs.create({ topicId: topic.id, owner, tenant, workKind: 'chore', currentStep: 'implementation.testing_guide', terminal: false });
+      const newStep = (index: number, step = 'implementation.testing_guide') => repos.runSteps.create({
+        runId: run.id, phase: 'implementation', step, role: 'none', startedAt: run.createdAt, endedAt: null,
+        durationMs: null, occurrence: { index, attempt: index + 1 }
+      });
+      const first = await newStep(0), second = await newStep(1), build = await newStep(2, 'implementation.build');
+      const scope = { runId: run.id, tenant };
+      const insert = { ...scope, runStepId: first.id, id: 'guide_1', revision: 1, createdAt: run.createdAt,
+        instructions: 'Use the build.', items: [{ id: 'item_1', text: 'Inspect it.' }] };
+      const repository = repos.testingGuides;
+      expect(await repository.findLatestByRun(scope)).toBeNull();
+      await expect(repository.create({ ...insert, runId: 'unknown' })).rejects.toThrow();
+      await expect(repository.create({ ...insert, tenant: 'other' })).rejects.toThrow();
+      await expect(repository.create({ ...insert, runStepId: build.id })).rejects.toThrow();
+      await expect(repository.create({ ...insert, runStepId: 'unknown' })).rejects.toThrow();
+      const saved = await repository.create(insert);
+      expect(await repository.create({ ...insert, id: 'attempted-replacement', instructions: 'Replace it.' })).toEqual(saved);
+      await expect(repository.create({ ...insert, runStepId: second.id, id: 'duplicate-revision' })).rejects.toThrow();
+      const revised = await repository.create({ ...insert, runStepId: second.id, id: 'guide_2', revision: 2 });
+      expect(await repository.findLatestByRun(scope)).toEqual(revised);
+      expect(await repository.findLatestByRun({ ...scope, tenant: 'other' })).toBeNull();
+      expect(asInternalSqliteDatabase(database).client.prepare('select revision from testing_guides order by revision').all())
+        .toEqual([{ revision: 1 }, { revision: 2 }]);
+    });
+  });
+
   it('creates and reads a project with owner and tenant', async () => {
     await withRepositories(async (repos) => {
       const project = await repos.projects.create({

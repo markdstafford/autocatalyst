@@ -514,6 +514,19 @@ describe('orchestrator ingress methods', () => {
   });
 });
 
+describe('ControlPlaneClient.getRunTestingGuide', () => {
+  it('parses a successful guide and returns normal typed not-found errors', async () => {
+    const guide = { id: 'guide_1', runId: 'run_1', revision: 2, instructions: 'Inspect the build.',
+      items: [{ id: 'item_1', text: 'Inspect it.' }], createdAt: '2026-06-12T00:00:00.000Z' };
+    const fetch = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(guide), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'not_found', message: 'No guide.' } }), { status: 404 }));
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', bearerToken: 'test-token', fetch });
+    await expect(client.getRunTestingGuide('run_1')).resolves.toEqual(guide);
+    expect(fetch.mock.calls[0]?.[0]).toMatchObject({ pathname: '/v1/runs/run_1/testing-guide' });
+    await expect(client.getRunTestingGuide('missing')).rejects.toMatchObject({ name: 'ControlPlaneClientError', status: 404 });
+  });
+});
+
 describe('ControlPlaneClient.getRunSpec', () => {
   it('calls GET /v1/runs/:id/spec with bearer header and parses response', async () => {
     const specResponse = {

@@ -1,3 +1,4 @@
+import { implementerDispositionsResultSchema, testingGuideAuthorResultSchema } from '@autocatalyst/api-contract';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -109,6 +110,27 @@ describe('selectScriptedResult', () => {
 
   it('returns an empty implementer dispositions result', () => {
     expect(selectScriptedResult({ step: 'implementation.build', workKind: 'feature', role: 'implementer' })).toEqual({});
+  });
+
+  it('returns exactly the required fixed build dispositions', () => {
+    const selection = { step: 'implementation.build', workKind: 'feature', role: 'implementer', requiredBuildFeedbackIds: ['f1', 'f2', 'f1'] };
+    expect(implementerDispositionsResultSchema.parse(selectScriptedResult(selection)).dispositions).toEqual([
+      { feedbackId: 'f1', disposition: 'fixed', summary: expect.stringMatching(/\S/u) },
+      { feedbackId: 'f2', disposition: 'fixed', summary: expect.stringMatching(/\S/u) }
+    ]);
+  });
+
+  it('scripts complete passes through the guide contract', () => {
+    const pass = (testingGuidePass: number) => testingGuideAuthorResultSchema.parse(selectScriptedResult({
+      step: 'implementation.testing_guide', workKind: 'chore', testingGuidePass
+    }));
+    const first = pass(1), second = pass(2), third = pass(3);
+    expect(first.items.map(item => item.text[0])).toEqual(['A', 'B', 'C', 'D']);
+    expect(second.items.map(item => item.text[0])).toEqual(['A', 'B', 'C', 'D', 'E']);
+    expect(second.items.slice(0, 3)).toEqual(first.items.slice(0, 3));
+    expect(second.items[3]).not.toEqual(first.items[3]);
+    expect(third).toEqual(second);
+    for (const guide of [first, second, third]) expect(guide.instructions.match(/```/gu)).toHaveLength(2);
   });
 
   it('returns an advance pr finalize result', () => {

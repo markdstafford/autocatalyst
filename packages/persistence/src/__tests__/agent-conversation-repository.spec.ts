@@ -72,7 +72,7 @@ describe('agent conversation slots', () => {
         await f.move(); await f.move(); await f.move(); // spec gate, plan, build
         await save(f.attempt(), 'implementation');
         await save(f.attempt('reviewer'), 'implementation_review');
-        await f.move(); // implementation gate
+        await f.move(); await f.move(); // testing guide, implementation gate
         await f.move('revise'); // new build occurrence, same scope
         for (const [role, handle] of [['implementer', 'implementation'], ['reviewer', 'implementation_review']] as const) {
           const dispatch = f.attempt(role);

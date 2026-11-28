@@ -1,3 +1,4 @@
+import { TESTING_GUIDE_SCHEMA_ID } from '@autocatalyst/api-contract';
 import { createHash } from 'node:crypto';
 import { PassThrough } from 'node:stream';
 
@@ -664,6 +665,11 @@ export function createClaudeAgentAdapter(
 
       const baseAllowedTools = mapAllowedToolsForClaude(env.toolPolicy.allowedTools);
       const reviewedSpec = isReviewedSpecCapture(input.structuredResultCapture);
+      const testingGuide = input.structuredResultCapture?.schemaId === TESTING_GUIDE_SCHEMA_ID;
+      if (testingGuide && (baseAllowedTools.length !== 3 ||
+        !['Read', 'Glob', 'Grep'].every(tool => baseAllowedTools.includes(tool)))) {
+        throw new UnsupportedProviderCapabilityError('tool_policy_unsupported', 'Testing guide requires Read, Glob, and Grep only.');
+      }
       const allowedTools = reviewedSpec && input.telemetryContext.role !== 'reviewer'
         ? [...baseAllowedTools, 'Skill'] : baseAllowedTools;
       const prompt = env.context.task.prompt;
@@ -852,6 +858,7 @@ export function createClaudeAgentAdapter(
                     // discovered skill into the system prompt.
                     ...(skillPlugins.length > 0 ? { plugins: skillPlugins, skills: 'all' } : {}),
                     ...(reviewedSpec ? { tools: allowedTools, additionalDirectories: [...workspace.workspaceRoots] } : {}),
+                    ...(testingGuide ? { tools: allowedTools, settingSources: [], mcpServers: {}, strictMcpConfig: true } : {}),
                     ...(structuredResult !== undefined ? { outputFormat: structuredResult.outputFormat } : {})
                   }
                 }

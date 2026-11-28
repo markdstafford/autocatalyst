@@ -6,7 +6,7 @@ import { runWorkflows } from './run-workflows.js';
 describe('nextWorkflowStep', () => {
   it('advances through the feature ordinary path', () => {
     const workflow = runWorkflows.feature;
-    const expected = ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'];
+    const expected = ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.testing_guide', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'];
     for (let index = 0; index < expected.length - 1; index += 1) {
       expect(nextWorkflowStep(workflow, expected[index], 'advance')).toMatchObject({
         ok: true,

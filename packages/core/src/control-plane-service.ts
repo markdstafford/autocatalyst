@@ -1,3 +1,5 @@
+import type { TestingGuide } from '@autocatalyst/api-contract';
+import type { TestingGuideRepository } from './domain-repositories.js';
 import type { RepairActivityReader } from './pr-ci-repair.js';
 import { publicationRecoveryStep } from './pr-publication.js';
 import { priceRunSessions } from './session-pricing.js';
@@ -296,6 +298,7 @@ export interface ControlPlaneService {
   subscribeRunEvents(input: ServiceSubscribeRunEventsInput): Promise<RunEventSubscription>;
   replayRunEvents(input: ServiceReplayRunEventsInput): Promise<RunEventReplayResult>;
   tick(input: ServiceTickInput): Promise<ServiceTickResult>;
+  getRunTestingGuide(input: ServiceGetRunSpecInput): Promise<TestingGuide>;
   getRunSpec(input: ServiceGetRunSpecInput): Promise<ServiceGetRunSpecResult>;
   createRunFeedback(input: ServiceCreateRunFeedbackInput): Promise<ServiceCreateRunFeedbackResult>;
   listRunFeedback(input: ServiceListRunFeedbackInput): Promise<ServiceListRunFeedbackResult>;
@@ -325,6 +328,7 @@ export interface DefaultControlPlaneServiceOptions {
   readonly events: RunEventStore;
   readonly policy: PolicyDecisionPoint;
   readonly artifacts: ArtifactRepository;
+  readonly testingGuides?: TestingGuideRepository;
   readonly feedback: FeedbackRepository;
   readonly runWorkspaceMetadata: RunWorkspaceMetadataRepository;
   readonly workspaceFilesystem: WorkspaceFileSystemPort;
@@ -494,6 +498,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
   readonly #events: RunEventStore;
   readonly #policy: PolicyDecisionPoint;
   readonly #artifacts: ArtifactRepository;
+  readonly #testingGuides: TestingGuideRepository | undefined;
   readonly #feedback: FeedbackRepository;
   readonly #runWorkspaceMetadata: RunWorkspaceMetadataRepository;
   readonly #workspaceFilesystem: WorkspaceFileSystemPort;
@@ -514,6 +519,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     this.#events = options.events;
     this.#policy = options.policy;
     this.#artifacts = options.artifacts;
+    this.#testingGuides = options.testingGuides;
     this.#feedback = options.feedback;
     this.#runWorkspaceMetadata = options.runWorkspaceMetadata;
     this.#workspaceFilesystem = options.workspaceFilesystem;
@@ -820,6 +826,24 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       }
       throw error;
     }
+  }
+
+  async getRunTestingGuide(input: ServiceGetRunSpecInput): Promise<TestingGuide> {
+    const decision = await this.#policy.authorize({
+      principal: input.principal, action: 'run_testing_guide.read',
+      resource: { kind: 'run_testing_guide', id: input.runId, path: '/v1/runs/:id/testing-guide' }
+    });
+    if (!decision.allowed) throw new ControlPlaneServiceError('forbidden', 'Not authorized to read a testing guide.');
+    const run = await requireTenantRun({ runs: this.#runs, runId: input.runId, tenant: input.tenant });
+    let stored;
+    try {
+      stored = await this.#testingGuides?.findLatestByRun({ runId: run.id, tenant: run.tenant });
+    } catch (error) {
+      throw persistenceFailed('Failed to load testing guide.', error);
+    }
+    if (!stored) throw new ControlPlaneServiceError('not_found', 'Testing guide not found.');
+    const { id, runId, revision, instructions, items, createdAt } = stored;
+    return { id, runId, revision, instructions, items, createdAt };
   }
 
   async getRunSpec(input: ServiceGetRunSpecInput): Promise<ServiceGetRunSpecResult> {

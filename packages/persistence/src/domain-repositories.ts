@@ -76,6 +76,7 @@ import {
   sessionUsageSchema,
   testResultEvidenceSchema,
   testResultSchema,
+  testingGuideSchema,
   testingGuideResultSchema,
   tokenBreakdownSchema,
   topicSchema,
@@ -114,6 +115,8 @@ import type {
   RunStepRepository,
   SessionRepository,
   TestResultRepository,
+  StoredTestingGuide,
+  TestingGuideRepository,
   TopicRepository,
   UpdateProjectInput,
   UpdatePullRequestStateInput,
@@ -143,6 +146,7 @@ import {
   sessions,
   configurationRecords,
   testResults,
+  testingGuides,
   topics
 } from './schema.js';
 import type { SqliteDatabase } from './sqlite.js';
@@ -1773,6 +1777,47 @@ export class DrizzleSessionRepository implements SessionRepository {
 // Test Results
 // ---------------------------------------------------------------------------
 
+function mapTestingGuide(row: typeof testingGuides.$inferSelect): StoredTestingGuide {
+  const { id, runId, revision, instructions, itemsJson, createdAt, runStepId } = row;
+  return { ...testingGuideSchema.parse({ id, runId, revision, instructions, items: JSON.parse(itemsJson), createdAt }), runStepId };
+}
+
+export class DrizzleTestingGuideRepository implements TestingGuideRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async create(input: StoredTestingGuide & { readonly tenant: string }): Promise<StoredTestingGuide> {
+    const { runId, tenant, runStepId } = input;
+    return this.#database.drizzle.transaction(tx => {
+      const owner = tx.select({ id: runs.id }).from(runs).innerJoin(runSteps, eq(runSteps.runId, runs.id))
+        .where(and(eq(runs.id, runId), eq(runs.tenant, tenant), eq(runSteps.id, runStepId),
+          eq(runSteps.step, 'implementation.testing_guide'))).get();
+      if (!owner) throw new Error('Invalid testing guide occurrence for run and tenant.');
+      const prior = tx.select().from(testingGuides)
+        .where(and(eq(testingGuides.runId, runId), eq(testingGuides.tenant, tenant), eq(testingGuides.runStepId, runStepId))).get();
+      if (prior) return mapTestingGuide(prior);
+      const { id, revision, instructions, items, createdAt } = input;
+      const guide = testingGuideSchema.parse({ id, runId, revision, instructions, items, createdAt });
+      const row = tx.insert(testingGuides).values({
+        id: guide.id, runId, tenant, runStepId, revision: guide.revision, instructions: guide.instructions,
+        itemsJson: JSON.stringify(guide.items), createdAt: guide.createdAt
+      }).returning().get();
+      return mapTestingGuide(row);
+    }, { behavior: 'immediate' });
+  }
+
+  async findLatestByRun({ runId, tenant }: { runId: string; tenant: string }): Promise<StoredTestingGuide | null> {
+    const row = this.#database.drizzle.select().from(testingGuides)
+      .innerJoin(runs, and(eq(runs.id, testingGuides.runId), eq(runs.tenant, testingGuides.tenant)))
+      .where(and(eq(testingGuides.runId, runId), eq(testingGuides.tenant, tenant)))
+      .orderBy(desc(testingGuides.revision)).limit(1).get();
+    return row ? mapTestingGuide(row.testing_guides) : null;
+  }
+}
+
 export class DrizzleTestResultRepository implements TestResultRepository {
   readonly #database;
 
@@ -2065,6 +2110,7 @@ export interface DrizzleDomainRepositories extends DomainRepositories {
   runSteps: DrizzleRunStepRepository;
   sessions: DrizzleSessionRepository;
   testResults: DrizzleTestResultRepository;
+  testingGuides: DrizzleTestingGuideRepository;
   runWorkspaceMetadata: DrizzleRunWorkspaceMetadataRepository;
 }
 
@@ -2082,6 +2128,7 @@ export function createDrizzleDomainRepositories(database: SqliteDatabase): Drizz
     runSteps: new DrizzleRunStepRepository(database),
     sessions: new DrizzleSessionRepository(database),
     testResults: new DrizzleTestResultRepository(database),
+    testingGuides: new DrizzleTestingGuideRepository(database),
     runWorkspaceMetadata: new DrizzleRunWorkspaceMetadataRepository(database)
   };
 }

@@ -1,4 +1,5 @@
-import { execFile } from 'node:child_process';
+import { TESTING_GUIDE_DIFF_MAX_BYTES } from '@autocatalyst/api-contract';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import {
@@ -95,7 +96,9 @@ async function assertContainment(workspacesRoot: string, workspaceRepoRoot: stri
   }
 }
 
-export function createRunWorkspaceGitPort(options: RunWorkspaceGitPortOptions): RunWorkspaceGitPort {
+export function createRunWorkspaceGitPort(options: RunWorkspaceGitPortOptions): RunWorkspaceGitPort & {
+  readHead(workspaceRepoRoot: string): Promise<string>;
+} {
   return {
     reviewerPolicy: defaultReviewerWorkspacePolicy,
     async commitFiles(input) {
@@ -162,6 +165,34 @@ export function createRunWorkspaceGitPort(options: RunWorkspaceGitPortOptions): 
       return stdout.trim().split('\n').filter(Boolean);
     },
 
+    async readHead(workspaceRepoRoot) {
+      await assertContainment(options.workspacesRoot, workspaceRepoRoot);
+      const { stdout } = await execFileAsync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], { cwd: workspaceRepoRoot });
+      return stdout.trim();
+    },
+
+    async getDiffText(input) {
+      validateDiffRef(input.baseRef);
+      validateDiffRef(input.headRef);
+      await assertContainment(options.workspacesRoot, input.workspaceRepoRoot);
+      const args = ['diff', '--no-ext-diff', '--no-textconv', input.baseRef, input.headRef ?? 'HEAD', '--'];
+      // Drain to process exit so a failing comparison never looks like a valid
+      // truncated patch. Retain only enough bytes to detect overflow.
+      return new Promise<string>((resolve, reject) => {
+        const child = spawn('git', args, { cwd: input.workspaceRepoRoot, stdio: ['ignore', 'pipe', 'ignore'] });
+        const bytes = Buffer.alloc(TESTING_GUIDE_DIFF_MAX_BYTES + 1);
+        let length = 0;
+        child.stdout.on('data', (chunk: Buffer) => {
+          length += chunk.copy(bytes, length, 0, Math.min(chunk.length, bytes.length - length));
+        });
+        child.on('error', () => reject(new Error('testing_guide_diff_failed')));
+        child.on('close', code => {
+          if (code === 0) resolve(bytes.subarray(0, length).toString('utf8'));
+          else reject(new Error('testing_guide_diff_failed'));
+        });
+      });
+    },
+
     async getChangedFiles(input: GetChangedFilesInput): Promise<readonly ChangedFileEntry[]> {
       validateDiffRef(input.baseRef);
       if (input.headRef !== undefined) {
@@ -170,11 +201,17 @@ export function createRunWorkspaceGitPort(options: RunWorkspaceGitPortOptions): 
       await assertContainment(options.workspacesRoot, input.workspaceRepoRoot);
 
       const head = input.headRef ?? 'HEAD';
-      const { stdout } = await execFileAsync(
-        'git',
-        ['diff', '--name-status', '--find-renames', '-z', input.baseRef, head, '--'],
-        { cwd: input.workspaceRepoRoot }
-      );
+      const args = ['diff', '--no-ext-diff', '--no-textconv', '--name-status', '--find-renames', '-z', input.baseRef, head, '--'];
+      const stdout = await new Promise<string>((resolve, reject) => {
+        const child = spawn('git', args, { cwd: input.workspaceRepoRoot, stdio: ['ignore', 'pipe', 'ignore'] });
+        const chunks: string[] = [];
+        child.stdout.setEncoding('utf8').on('data', (chunk: string) => chunks.push(chunk));
+        child.on('error', () => reject(new Error('changed_files_comparison_failed')));
+        child.on('close', code => {
+          if (code === 0) resolve(chunks.join(''));
+          else reject(new Error('changed_files_comparison_failed'));
+        });
+      });
 
       const entries = new Map<string, ChangedFileEntry>();
       const fields = stdout.split('\0');

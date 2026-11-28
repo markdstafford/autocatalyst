@@ -18,6 +18,7 @@ export type PolicyResourceDescriptor =
   | { readonly kind: 'run_workflow'; readonly id: string; readonly path: '/v1/runs/:id/workflow' }
   | { readonly kind: 'run_steps'; readonly id: string; readonly path: '/v1/runs/:id/steps' }
   | { readonly kind: 'run_events'; readonly id: string; readonly path: '/v1/runs/:id/events' }
+  | { readonly kind: 'run_testing_guide'; readonly id: string; readonly path: '/v1/runs/:id/testing-guide' }
   | { readonly kind: 'run_spec'; readonly id: string; readonly path: '/v1/runs/:id/spec' }
   | { readonly kind: 'run_feedback'; readonly id: string; readonly path: '/v1/runs/:id/feedback' }
   | { readonly kind: 'run_feedback_thread'; readonly id: string; readonly path: '/v1/runs/:id/feedback/:feedbackId/thread' }
@@ -66,6 +67,7 @@ export type PolicyAction =
   | 'run_events.stream'
   | 'run.tick'
   | 'run_spec.read'
+  | 'run_testing_guide.read'
   | 'run_feedback.create'
   | 'run_feedback.list'
   | 'run_feedback.thread.append'

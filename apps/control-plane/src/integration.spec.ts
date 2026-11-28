@@ -3774,6 +3774,7 @@ describe('run replies integration', () => {
           readFileAtRef: vi.fn(),
           listFilesAtRef: vi.fn(),
           getChangedFiles: vi.fn(),
+          getDiffText: vi.fn(),
           reviewerPolicy: defaultReviewerWorkspacePolicy
         },
         dispatcher: {
@@ -3818,6 +3819,9 @@ describe('run replies integration', () => {
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET,
         convergenceEngine,
+        unitOfWork: { run: async ({ run }) => run.currentStep === 'implementation.testing_guide'
+          ? { directive: 'advance', result: { instructions: 'Inspect the build.', items: [{ text: 'Check it manually.' }] } }
+          : { directive: 'advance' } },
         onControlPlaneReady: (service) => { controlPlane = service; }
       });
       try {
@@ -3932,7 +3936,7 @@ async function pollForStep(
 
 describe('run replies full loop integration', () => {
   it(
-    'spec approve auto-traverses implementation.plan → implementation.build → implementation.human_review, ' +
+    'spec approve auto-traverses implementation.plan → implementation.build → implementation.testing_guide → implementation.human_review, ' +
     'feedback revise re-runs implementation.build, approve advances out of implementation gate',
     { timeout: 60_000 },
     async () => {
@@ -3951,7 +3955,9 @@ describe('run replies full loop integration', () => {
           await execFileAsync('git', ['commit', '-m', 'seed spec for full-loop test'], { cwd: tempDir });
 
           // Stub unit of work: handles non-convergence steps (e.g. spec.author passthrough).
-          const unitOfWork: RunUnitOfWork = { run: async () => ({ directive: 'advance' as const }) };
+          const unitOfWork: RunUnitOfWork = { run: async ({ run }) => run.currentStep === 'implementation.testing_guide'
+          ? { directive: 'advance', result: { instructions: 'Inspect the build.', items: [{ text: 'Check it manually.' }] } }
+          : { directive: 'advance' } };
 
           // Deterministic convergence engine: wired through the normal orchestrator dispatch path
           // for implementation.build. Reads open implementation feedback, marks each as addressed

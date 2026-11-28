@@ -89,7 +89,8 @@ describe('run recovery (production server wiring)', () => {
   async function seedFailedRun(options: {
     readonly repos: DrizzleDomainRepositories;
     readonly title: string;
-    readonly failedStep: 'implementation.build' | 'spec.author';
+    readonly failedStep: 'implementation.build' | 'implementation.testing_guide' | 'spec.author';
+    readonly seedPriorGuide?: boolean;
     readonly phase: 'implementation' | 'spec';
     readonly commitWork: boolean;
   }): Promise<SeededFailedRun> {
@@ -125,11 +126,27 @@ describe('run recovery (production server wiring)', () => {
       await git(['-c', 'user.name=Autocatalyst Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'add work'], provisioned.repoRoot);
     }
 
+    let failedStepId = start.runStep.id;
+    if (options.seedPriorGuide) {
+      await repos.testingGuides.create({ id: 'guide_prior', runId, tenant, revision: 1, runStepId: failedStepId,
+        instructions: 'Inspect the prior build.', items: [{ id: 'check_prior', text: 'Inspect the build.' }], createdAt: start.run.createdAt });
+      const nextStep = async (expectedStep: string, step: string) => {
+        const { runStep } = await repos.runs.recordRunStepTransition({
+          expectedStep, runId, currentStep: step, terminal: false, sourceRunStepId: failedStepId,
+          runStep: { phase: 'implementation', step, role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
+        });
+        failedStepId = runStep.id;
+      };
+      await nextStep('implementation.testing_guide', 'implementation.human_review');
+      await nextStep('implementation.human_review', 'implementation.build');
+      await nextStep('implementation.build', 'implementation.testing_guide');
+    }
+
     // Transition the run to the terminal failed state.
     await repos.runs.recordRunStepTransition({
       expectedStep: options.failedStep,
       runId, currentStep: 'failed', terminal: true, failureReason: 'provider_auth_failed',
-      sourceRunStepId: start.runStep.id,
+      sourceRunStepId: failedStepId,
       runStep: { phase: null, step: 'failed', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
     });
 
@@ -149,7 +166,9 @@ describe('run recovery (production server wiring)', () => {
 
     // A stub unit of work lets the reopened run advance past implementation.build so we can
     // observe that recovery re-dispatches through the existing queue.
-    const unitOfWork: RunUnitOfWork = { run: async () => ({ directive: 'advance' as const }) };
+    const unitOfWork: RunUnitOfWork = { run: async ({ run }) => run.currentStep === 'implementation.testing_guide'
+            ? { directive: 'advance', result: { instructions: 'Inspect the build.', items: [{ text: 'Check it manually.' }] } }
+            : { directive: 'advance' } };
     const app = await createControlPlaneServer({
       databasePath, bearerToken: 'token', masterSecret: 'correct-master-secret',
       workspaceRoots: { reposRoot, workspacesRoot }, unitOfWork, autoDispatch: { enabled: true }
@@ -181,6 +200,54 @@ describe('run recovery (production server wiring)', () => {
       expect(reached).toBe(true);
     } finally {
       await app.close();
+    }
+  });
+
+  it.each([
+    { commitWork: true, mode: undefined, expected: 'resume' },
+    { commitWork: false, mode: undefined, expected: 'start_over' },
+    { commitWork: false, mode: 'resume', expected: 'resume' },
+    { commitWork: true, mode: 'start_over', expected: 'start_over' }
+  ] as const)('recovers a guide with committed=$commitWork mode=$mode via $expected', async ({ commitWork, mode, expected }) => {
+    const database = createSqliteDatabase({ path: databasePath });
+    await migrateSqliteDatabase(database);
+    const repos = createDrizzleDomainRepositories(database);
+    const { runId } = await seedFailedRun({
+      repos, commitWork, seedPriorGuide: true, title: 'Guide recovery', failedStep: 'implementation.testing_guide', phase: 'implementation'
+    });
+    const seen: Array<{ step: string; pass?: number }> = [];
+    const unitOfWork: RunUnitOfWork = {
+      async run(input) {
+        seen.push({ step: input.run.currentStep, ...(input.testingGuidePass ? { pass: input.testingGuidePass } : {}) });
+        return input.run.currentStep === 'implementation.testing_guide'
+          ? { directive: 'advance', result: { instructions: 'Inspect the new build.', items: [{ text: 'Inspect the build.' }] } }
+          : { directive: 'advance' };
+      }
+    };
+    const app = await createControlPlaneServer({ databasePath, bearerToken: 'token', masterSecret: 'correct-master-secret',
+      workspaceRoots: { reposRoot, workspacesRoot }, unitOfWork });
+    try {
+      const url = `/v1/runs/${runId}`;
+      const old = await repos.testingGuides.findLatestByRun({ runId, tenant });
+      const response = await app.inject({ method: 'POST', url: url + '/recover', headers: authorization,
+        payload: mode ? { mode } : {} });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ mode: expected, run: {
+        currentStep: expected === 'resume' ? 'implementation.testing_guide' : 'implementation.plan'
+      } });
+      await expect.poll(async () => (await repos.runs.findById(runId))?.currentStep).toBe('implementation.human_review');
+      const guide = await repos.testingGuides.findLatestByRun({ runId, tenant });
+      expect(guide).toMatchObject({ revision: 2, items: [{ id: 'check_prior', text: 'Inspect the build.' }] });
+      const guideSteps = (await repos.runSteps.listByRun(runId)).filter(step => step.step === 'implementation.testing_guide');
+      expect(new Set(guideSteps.map(step => step.id)).size).toBe(3);
+      expect(guide?.runStepId).not.toBe(old?.runStepId);
+      expect(seen).toEqual([
+        ...(expected === 'start_over' ? [{ step: 'implementation.build' }] : []),
+        { step: 'implementation.testing_guide', pass: 2 }
+      ]);
+    } finally {
+      await app.close();
+      database.close();
     }
   });
 

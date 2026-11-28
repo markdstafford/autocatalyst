@@ -1,3 +1,4 @@
+import { TESTING_GUIDE_SCHEMA_ID } from '@autocatalyst/api-contract';
 import { z } from 'zod';
 import type { StepResultContractDefinition } from './result-contracts.js';
 import type { ResultValidationIssue } from './result-tolerance.js';
@@ -111,4 +112,18 @@ export function decodeSpecRoleProviderResult(capture: StructuredAgentResultCaptu
     Object.keys(value).length === 1 && 'response' in value ? value.response : value;
   const question = specQuestionResultSchema.safeParse(payload);
   return question.success ? { kind: 'question', question: question.data.question } : { kind: 'complete', value: payload };
+}
+
+/** OpenAI strict JSON requires optional keys to be present and nullable. */
+export function decodeTestingGuideOpenAIResult(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || !('items' in value) || !Array.isArray(value.items)) return value;
+  return { ...value, items: value.items.map(item => {
+    if (item === null || typeof item !== 'object' || item.expected !== null) return item as unknown;
+    const { expected: _expected, ...present } = item;
+    return present;
+  }) };
+}
+
+export function isTestingGuideCapture(capture: StructuredAgentResultCapture | undefined): boolean {
+  return capture?.schemaId === TESTING_GUIDE_SCHEMA_ID;
 }

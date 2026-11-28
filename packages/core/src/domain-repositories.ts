@@ -31,6 +31,7 @@ import type {
   RunWaitingOn,
   StoredSession,
   ModelRateRecord,
+  TestingGuide,
   TestResult,
   Topic
 } from '@autocatalyst/api-contract';
@@ -340,6 +341,13 @@ export interface RunStepRepository {
   updateCheckpoint(input: UpdateRunStepCheckpointInput): Promise<RunStep>;
 }
 
+export type StoredTestingGuide = TestingGuide & { readonly runStepId: string };
+
+export interface TestingGuideRepository {
+  create(input: StoredTestingGuide & { readonly tenant: string }): Promise<StoredTestingGuide>;
+  findLatestByRun(input: { readonly runId: string; readonly tenant: string }): Promise<StoredTestingGuide | null>;
+}
+
 export interface SessionRepository {
   create(input: CreateSessionInput, attemptId?: string): Promise<StoredSession>;
   findById(id: string): Promise<StoredSession | null>;
@@ -392,6 +400,7 @@ export interface DomainRepositories {
   runSteps: RunStepRepository;
   sessions: SessionRepository;
   testResults: TestResultRepository;
+  testingGuides: TestingGuideRepository;
   runWorkspaceMetadata: RunWorkspaceMetadataRepository;
 }
 

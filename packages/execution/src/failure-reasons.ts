@@ -3,6 +3,7 @@ import { transientHttpStatuses } from './request-alteration.js';
 export const knownFailureReasonCodes = [
   'provider_auth_failed',
   'spec_authoring_failed',
+  'testing_guide_failed',
   'spec_review_not_configured',
   'spec_author_result_invalid',
   'spec_review_checkpoint_invalid',

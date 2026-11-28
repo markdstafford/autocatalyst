@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isKnownRunStepId } from './run-step-catalog.js';
+import { getRunStepDefinition, isKnownRunStepId } from './run-step-catalog.js';
 import {
   getRunWorkflowById,
   getRunWorkflowForWorkKind,
@@ -9,10 +9,10 @@ import {
 } from './run-workflows.js';
 
 const expectedPaths = {
-  feature: ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
-  enhancement: ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
-  bug: ['intake', 'spec.author', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
-  chore: ['intake', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
+  feature: ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.testing_guide', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
+  enhancement: ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.testing_guide', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
+  bug: ['intake', 'spec.author', 'implementation.plan', 'implementation.build', 'implementation.testing_guide', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
+  chore: ['intake', 'implementation.plan', 'implementation.build', 'implementation.testing_guide', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
   file_issue: ['intake', 'spec.author', 'issues.file', 'done'],
   question: ['intake', 'question.answer', 'done']
 } as const;
@@ -24,6 +24,17 @@ describe('run workflows', () => {
       expect(runWorkflows[workflowId as keyof typeof runWorkflows].steps).toEqual(steps);
     }
     expect(runWorkflows.feature).not.toBe(runWorkflows.enhancement);
+  });
+
+  it.each(['feature', 'enhancement', 'bug', 'chore'] as const)('inserts the one-shot guide and preserves revision edges for %s', kind => {
+    const { transitions } = runWorkflows[kind];
+    expect(getRunStepDefinition('implementation.testing_guide')).toEqual({
+      id: 'implementation.testing_guide', phase: 'implementation', kind: 'work', waitingOn: 'ai', roles: ['implementer']
+    });
+    expect(transitions['implementation.build']).toEqual({ advance: 'implementation.testing_guide', needs_input: 'implementation.awaiting_input' });
+    expect(transitions['implementation.testing_guide']).toEqual({ advance: 'implementation.human_review' });
+    expect(transitions['implementation.human_review']?.revise).toBe('implementation.build');
+    expect(transitions['pr.finalize']?.revise).toBe('implementation.human_review');
   });
 
   it('declares artifact kinds only where approved', () => {
@@ -75,7 +86,7 @@ describe('B1 workflow paths', () => {
   it('feature workflow skips docs phase', () => {
     expect(runWorkflows.feature.steps).toEqual([
       'intake', 'spec.author', 'spec.human_review', 'implementation.plan',
-      'implementation.build', 'implementation.human_review',
+      'implementation.build', 'implementation.testing_guide', 'implementation.human_review',
       'pr.finalize', 'pr.open', 'pr.human_review', 'done'
     ]);
   });
@@ -86,14 +97,14 @@ describe('B1 workflow paths', () => {
 
   it('bug workflow skips docs phase', () => {
     expect(runWorkflows.bug.steps).toEqual([
-      'intake', 'spec.author', 'implementation.plan', 'implementation.build',
+      'intake', 'spec.author', 'implementation.plan', 'implementation.build', 'implementation.testing_guide',
       'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'
     ]);
   });
 
   it('chore workflow skips docs phase', () => {
     expect(runWorkflows.chore.steps).toEqual([
-      'intake', 'implementation.plan', 'implementation.build',
+      'intake', 'implementation.plan', 'implementation.build', 'implementation.testing_guide',
       'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'
     ]);
   });
