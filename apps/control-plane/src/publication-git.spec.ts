@@ -52,6 +52,7 @@ describe('publication Git', () => {
     const target = await git(f.work, 'rev-parse', 'HEAD');
     await symlink('/must-not-read', join(f.work, 'escape'));
     await git(f.work, 'add', 'escape');
+    await f.commit(f.work, 'task-decomposition.md', 'planning guide');
     const candidate = await f.commit(f.work, 'pinned.txt', 'approved candidate');
     const treeSha = await git(f.work, 'rev-parse', `${candidate}^{tree}`);
     await writeFile(join(f.work, 'pinned.txt'), 'mutable working copy');
@@ -66,11 +67,16 @@ describe('publication Git', () => {
     const review = { occurrenceId: 'review-1', candidateSha: candidate, targetSha: target, treeSha };
     const snapshot = await materializePublicationReviewSnapshot({ repoRoot, scratchRoot, review });
     expect(await readFile(join(snapshot.sourceRoot, 'pinned.txt'), 'utf8')).toBe('approved candidate');
+    expect(await readFile(join(snapshot.sourceRoot, 'task-decomposition.md'), 'utf8')).toBe('planning guide');
     expect(await readFile(join(snapshot.reviewRoot, 'diff.txt'), 'utf8')).toContain('+approved candidate');
     await expect(readFile(join(snapshot.sourceRoot, 'escape'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await readFile(join(snapshot.reviewRoot, 'special-entries.txt'), 'utf8')).toContain('escape: symbolic link');
     await expect(materializePublicationReviewSnapshot({ repoRoot, scratchRoot, review: { ...review, treeSha: target } }))
       .rejects.toThrow('publication_review_tree_invalid');
+    const rejected = await f.commit(repoRoot, 'fixture-sk-example123.md', 'synthetic filename');
+    await expect(materializePublicationReviewSnapshot({
+      repoRoot, scratchRoot, review: { occurrenceId: review.occurrenceId, targetSha: target, candidateSha: rejected }
+    })).rejects.toThrow('publication_review_source_invalid');
   }));
 
   it('pins and integrates the current target and refuses to overwrite a divergent source', async () => fixture(async f => {
